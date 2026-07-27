@@ -53,3 +53,9 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(response.status, 206)
             self.assertEqual(response.read(), b"2345")
             self.assertEqual(response.headers["Content-Range"], "bytes 2-5/10")
+
+    def test_hidden_panels_cannot_be_redisplayed_by_component_styles(self):
+        with urllib.request.urlopen(f"{self.base}/style.css") as response:
+            stylesheet = response.read().decode()
+
+        self.assertIn("[hidden] { display: none !important; }", stylesheet)

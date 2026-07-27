@@ -14,6 +14,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; min-width: 980px; background: var(--bg); color: var(--text); }
 button, input, textarea { font: inherit; }
 button, .button-label {
