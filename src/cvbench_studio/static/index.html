@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CVBench Studio</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div>
+      <span class="eyebrow">LOCAL TRUTH WORKSPACE</span>
+      <h1>CVBench Studio</h1>
+    </div>
+    <div class="header-actions">
+      <span id="save-state" class="status neutral">No project</span>
+      <button id="validate" class="secondary" disabled>Validate</button>
+      <button id="export" disabled>Export package</button>
+    </div>
+  </header>
+
+  <main>
+    <aside class="projects">
+      <div class="section-heading">
+        <h2>Projects</h2>
+        <button id="new-project" class="icon" title="New project">+</button>
+      </div>
+      <div id="project-list" class="project-list"></div>
+      <div class="local-note">
+        <strong>Local by default.</strong>
+        Video, annotations, and model proposals stay in the selected data directory.
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <div id="empty-state" class="empty-state">
+        <div class="empty-mark">□</div>
+        <h2>Create or open a project</h2>
+        <p>Import a clip, draw frame-accurate boxes, review tracks, and export canonical CVBench truth.</p>
+        <button id="empty-new-project">Create project</button>
+      </div>
+
+      <div id="editor" hidden>
+        <div class="editor-title">
+          <div>
+            <span id="project-id" class="eyebrow"></span>
+            <h2 id="project-name"></h2>
+          </div>
+          <div class="clip-actions">
+            <label class="secondary button-label">
+              Import video
+              <input id="video-file" type="file" accept="video/*" hidden>
+            </label>
+            <label>FPS <input id="fps" type="number" min="1" max="240" step="0.001" value="30"></label>
+          </div>
+        </div>
+
+        <div id="video-empty" class="video-empty">
+          <p>Import a video to begin annotation.</p>
+        </div>
+        <div id="stage" class="stage" hidden>
+          <div class="video-stack">
+            <video id="video" preload="metadata"></video>
+            <canvas id="overlay"></canvas>
+          </div>
+          <div class="frame-readout">
+            <button id="play-pause" class="secondary compact">Play</button>
+            <strong id="frame">Frame 0</strong>
+            <span id="time">0.000 s</span>
+            <input id="seek" class="seek" type="range" min="0" max="1" step="0.001" value="0" aria-label="Video position">
+            <button id="previous-frame" class="secondary compact">← frame</button>
+            <button id="next-frame" class="secondary compact">frame →</button>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <button id="draw-box" disabled>Draw box</button>
+          <button id="copy-previous" class="secondary" disabled>Copy previous</button>
+          <button id="delete-box" class="danger" disabled>Delete box</button>
+          <span class="hint">Drag a box to move it. Drag its lower-right corner to resize.</span>
+        </div>
+      </div>
+    </section>
+
+    <aside id="inspector" class="inspector" hidden>
+      <div class="section-heading">
+        <h2>Tracks</h2>
+        <button id="add-track" class="icon" title="Add track">+</button>
+      </div>
+      <div id="track-list" class="track-list"></div>
+      <button id="delete-track" class="danger full" disabled>Delete selected track</button>
+
+      <div class="divider"></div>
+      <h2>External model</h2>
+      <p class="small">Queue your own adapter. Studio does not bundle or silently install a model.</p>
+      <textarea id="model-command" rows="4" placeholder="python model.py --video {video} --output {output}"></textarea>
+      <button id="run-model" class="secondary full">Queue adapter</button>
+      <div id="job-list" class="job-list"></div>
+    </aside>
+  </main>
+
+  <dialog id="project-dialog">
+    <form method="dialog" id="project-form">
+      <div class="dialog-heading">
+        <div>
+          <span class="eyebrow">NEW WORKSPACE</span>
+          <h2>Create project</h2>
+        </div>
+        <button value="cancel" class="icon secondary">×</button>
+      </div>
+      <label>Project name<input id="new-name" required autofocus placeholder="Training clip review"></label>
+      <label>Classes<input id="new-classes" value="person, vehicle, dog, sports_ball"></label>
+      <p class="small">Comma-separated. Classes are frozen into the project metadata.</p>
+      <div class="dialog-actions">
+        <button value="cancel" class="secondary">Cancel</button>
+        <button id="create-project" value="default">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="source-dialog">
+    <form method="dialog" id="source-form">
+      <div class="dialog-heading">
+        <div>
+          <span class="eyebrow">CONTRIBUTION PROVENANCE</span>
+          <h2>Source and license</h2>
+        </div>
+        <button value="cancel" class="icon secondary">×</button>
+      </div>
+      <label>Source title<input id="source-title" required></label>
+      <label>Original URI<input id="source-uri" type="text" required placeholder="https://… or file provenance URI"></label>
+      <div class="two-columns">
+        <label>SPDX ID<input id="license-spdx" required placeholder="MIT"></label>
+        <label>License name<input id="license-name" required placeholder="MIT License"></label>
+      </div>
+      <label>License URL<input id="license-url" required placeholder="https://opensource.org/license/mit"></label>
+      <label>License text<textarea id="license-text" rows="6" required></textarea></label>
+      <p class="small">Export remains a draft with an empty review ledger. Certification happens in the dataset repository.</p>
+      <div class="dialog-actions">
+        <button value="cancel" class="secondary">Cancel</button>
+        <button value="default">Save and export draft</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
