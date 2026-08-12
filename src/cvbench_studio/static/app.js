@@ -139,6 +139,11 @@ function markSelectedTrackModelAssisted() {
   }
 }
 
+function markBoxModelAssisted(box) {
+  markSelectedTrackModelAssisted();
+  if (box) delete box.confidence;
+}
+
 function updateFrame() {
   const video = $("#video");
   $("#frame").textContent = `Frame ${currentFrame()}`;
@@ -217,7 +222,7 @@ $("#overlay").addEventListener("pointerdown", event => {
   const hit = hitBox(point);
   if (hit) {
     state.selectedTrack = hit.track_id;
-    markSelectedTrackModelAssisted();
+    markBoxModelAssisted(hit);
     const [x1, y1, x2, y2] = hit.bbox_xyxy;
     const resize = Math.abs(point[0] - x2) < 18 && Math.abs(point[1] - y2) < 18;
     state.interaction = {kind: resize ? "resize" : "move", point, box: hit, original: [...hit.bbox_xyxy]};
@@ -342,7 +347,10 @@ $("#copy-previous").addEventListener("click", () => {
   if (!prior) return toast("No earlier box exists for this track.");
   markSelectedTrackModelAssisted();
   const existing = selectedBox();
-  if (existing) existing.bbox_xyxy = [...prior.bbox_xyxy];
+  if (existing) {
+    existing.bbox_xyxy = [...prior.bbox_xyxy];
+    delete existing.confidence;
+  }
   else state.annotations.boxes.push({frame, track_id: state.selectedTrack, bbox_xyxy: [...prior.bbox_xyxy]});
   markDirty();
   renderTracks();

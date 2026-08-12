@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 import zipfile
+from itertools import islice
 from pathlib import Path
 
 from cvbench_studio.core import (
@@ -19,13 +20,15 @@ from cvbench_studio.core import (
     validate_annotations,
     video_path,
 )
-from cvbench_studio.sampling import sample_frame_indices
+from cvbench_studio.sampling import iter_sample_frame_indices, sample_frame_indices
 
 
 class CoreTests(unittest.TestCase):
     def test_sample_frame_indices_are_deterministic_and_unique(self):
         self.assertEqual(sample_frame_indices(300, 30.0, 5.0), list(range(0, 300, 6)))
         self.assertEqual(sample_frame_indices(2, 30.0, 5.0), [0])
+        self.assertEqual(list(islice(iter_sample_frame_indices(30.0, 5.0), 5)), [0, 6, 12, 18, 24])
+        self.assertEqual(list(islice(iter_sample_frame_indices(30.0, 60.0), 5)), [0, 1, 2, 3, 4])
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

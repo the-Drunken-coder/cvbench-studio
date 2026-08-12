@@ -12,7 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from cvbench_studio.sampling import sample_frame_indices
+from cvbench_studio.sampling import iter_sample_frame_indices
 
 
 @dataclass(frozen=True)
@@ -173,8 +173,8 @@ def main() -> int:
     if not capture.isOpened():
         raise ValueError(f"cannot decode source video: {args.video}")
     fps = float(capture.get(cv2.CAP_PROP_FPS))
-    frame_count = round(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    selected = set(sample_frame_indices(frame_count, fps, args.sample_fps))
+    selected_indices = iter_sample_frame_indices(fps, args.sample_fps)
+    selected_frame = next(selected_indices)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as output:
         metadata = {"schema_version": "cvbench.model-output/v1", "model": model}
@@ -184,7 +184,7 @@ def main() -> int:
             ok, image = capture.read()
             if not ok:
                 break
-            if frame_index in selected:
+            if frame_index == selected_frame:
                 detections = detector.detect(image, args.confidence_threshold, args.nms_threshold)
                 for index, detection in enumerate(detections):
                     row = {
@@ -197,6 +197,7 @@ def main() -> int:
                         "model": model,
                     }
                     output.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+                selected_frame = next(selected_indices)
             frame_index += 1
     capture.release()
     return 0
