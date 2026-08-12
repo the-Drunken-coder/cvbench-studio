@@ -235,7 +235,10 @@ def validate_annotations(project: dict[str, Any], annotations: dict[str, Any]) -
             continue
         confidence = box.get("confidence")
         if confidence is not None and (
-            not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0 <= confidence <= 1
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not math.isfinite(confidence)
+            or not 0 <= confidence <= 1
         ):
             errors.append(f"box {index} has an invalid confidence")
         x1, y1, x2, y2 = coordinates

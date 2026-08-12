@@ -64,7 +64,10 @@ def parse_class_map(values: list[str]) -> dict[int, str]:
         coco_id, separator, class_id = value.partition("=")
         if not separator or not coco_id.isdigit() or not class_id:
             raise ValueError(f"class mapping must use <coco-id=class-id>: {value!r}")
-        result[int(coco_id)] = class_id
+        index = int(coco_id)
+        if index > 79:
+            raise ValueError(f"COCO class ID must be between 0 and 79: {index}")
+        result[index] = class_id
     if not result:
         raise ValueError("at least one --class mapping is required")
     return result
@@ -174,6 +177,8 @@ def main() -> int:
     selected = set(sample_frame_indices(frame_count, fps, args.sample_fps))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as output:
+        metadata = {"schema_version": "cvbench.model-output/v1", "model": model}
+        output.write(json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n")
         frame_index = 0
         while True:
             ok, image = capture.read()
@@ -194,8 +199,6 @@ def main() -> int:
                     output.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
             frame_index += 1
     capture.release()
-    if frame_index != frame_count:
-        raise ValueError(f"decoded {frame_index} frames but video declared {frame_count}")
     return 0
 
 

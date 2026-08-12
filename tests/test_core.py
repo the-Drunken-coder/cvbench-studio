@@ -102,6 +102,15 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(StudioError):
             save_annotations(self.data, self.project["id"], annotations)
 
+    def test_validation_rejects_boolean_confidence(self):
+        for confidence in (True, False):
+            with self.subTest(confidence=confidence):
+                annotations = self.annotations()
+                annotations["boxes"][0]["confidence"] = confidence
+                result = validate_annotations(self.project, annotations)
+                self.assertFalse(result["valid"])
+                self.assertTrue(any("invalid confidence" in error for error in result["errors"]))
+
     def test_save_and_export_contract(self):
         annotations = self.annotations()
         result = save_annotations(self.data, self.project["id"], annotations)

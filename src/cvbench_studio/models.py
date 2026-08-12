@@ -115,7 +115,12 @@ class ModelQueue:
             x1, y1, x2, y2 = box
             if x1 < 0 or y1 < 0 or x2 <= x1 or y2 <= y1 or x2 > video["width"] or y2 > video["height"]:
                 raise StudioError(f"proposal line {line_number} has out-of-bounds geometry")
-            if not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+            if confidence is not None and (
+                isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not math.isfinite(confidence)
+                or not 0 <= confidence <= 1
+            ):
                 raise StudioError(f"proposal line {line_number} has an invalid confidence")
             rows.append(row)
         track_map: dict[str, dict[str, Any]] = {}
@@ -142,14 +147,14 @@ class ModelQueue:
             if key in seen:
                 raise StudioError(f"proposal track {original} has duplicate frame {row['frame']}")
             seen.add(key)
-            boxes.append(
-                {
-                    "frame": row["frame"],
-                    "track_id": imported_id,
-                    "bbox_xyxy": [round(float(value), 3) for value in row["bbox_xyxy"]],
-                    "confidence": round(float(row["confidence"]), 6),
-                }
-            )
+            imported_box = {
+                "frame": row["frame"],
+                "track_id": imported_id,
+                "bbox_xyxy": [round(float(value), 3) for value in row["bbox_xyxy"]],
+            }
+            if row.get("confidence") is not None:
+                imported_box["confidence"] = round(float(row["confidence"]), 6)
+            boxes.append(imported_box)
         return {
             "job_id": job_id,
             "tracks": list(track_map.values()),
@@ -227,7 +232,10 @@ class ModelQueue:
                             row = json.loads(line)
                         except json.JSONDecodeError as exc:
                             raise StudioError(f"invalid proposal JSONL on line {line_number}") from exc
-                        if row.get("schema_version") == "cvbench.model-proposal/v1":
+                        if row.get("schema_version") in {
+                            "cvbench.model-output/v1",
+                            "cvbench.model-proposal/v1",
+                        }:
                             candidate_model = row.get("model")
                             self._validate_model(candidate_model, line_number)
                             if model is not None and candidate_model != model:
@@ -253,15 +261,15 @@ class ModelQueue:
             "code_revision", "config_sha256", "license",
         }
         if not isinstance(model, dict) or not required.issubset(model):
-            raise StudioError(f"proposal line {line_number} lacks complete model provenance")
+            raise StudioError(f"adapter output line {line_number} lacks complete model provenance")
         if not SHA256.fullmatch(str(model["weights_sha256"])) or not SHA256.fullmatch(str(model["config_sha256"])):
-            raise StudioError(f"proposal line {line_number} has an invalid provenance hash")
+            raise StudioError(f"adapter output line {line_number} has an invalid provenance hash")
         if len(str(model["code_revision"])) < 7:
-            raise StudioError(f"proposal line {line_number} has an invalid code revision")
+            raise StudioError(f"adapter output line {line_number} has an invalid code revision")
         license_value = model["license"]
         if (
             not isinstance(license_value, dict)
             or not re.fullmatch(r"[A-Za-z0-9.+-]{2,80}", str(license_value.get("spdx", "")))
             or not str(license_value.get("url", "")).strip()
         ):
-            raise StudioError(f"proposal line {line_number} has invalid model license provenance")
+            raise StudioError(f"adapter output line {line_number} has invalid model license provenance")

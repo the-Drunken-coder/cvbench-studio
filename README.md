@@ -76,6 +76,10 @@ proposals** action. Imported output is marked `model_generated`; a manual box
 edit changes its origin to `model_assisted`. Neither state is a certification
 or review approval.
 
+Adapters should emit one `cvbench.model-output/v1` metadata row containing the
+model provenance before any `cvbench.model-proposal/v1` rows. This preserves
+the model audit trail even when a successful run finds no objects.
+
 On Apple Silicon, run Studio and a PyTorch adapter natively so the adapter can
 select `mps`. Studio does not import PyTorch, select a model, download weights,
 or claim that a model is bundled. Docker is an optional Linux deployment path

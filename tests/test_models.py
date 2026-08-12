@@ -9,6 +9,7 @@ import zipfile
 from pathlib import Path
 
 from cvbench_studio.core import (
+    StudioError,
     create_project,
     export_project,
     import_video,
@@ -19,6 +20,16 @@ from cvbench_studio.models import ModelQueue
 
 
 class ModelQueueTests(unittest.TestCase):
+    @staticmethod
+    def _wait(queue, project_id, job_id):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            job = queue.get(project_id, job_id)
+            if job["status"] in {"completed", "failed"}:
+                return job
+            time.sleep(0.02)
+        return queue.get(project_id, job_id)
+
     def test_external_adapter_writes_separate_proposals(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
@@ -52,12 +63,7 @@ class ModelQueueTests(unittest.TestCase):
                 project["id"],
                 [sys.executable, "-c", script, "{output}", json.dumps(proposal, separators=(",", ":"))],
             )
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                job = queue.get(project["id"], job["id"])
-                if job["status"] in {"completed", "failed"}:
-                    break
-                time.sleep(0.02)
+            job = self._wait(queue, project["id"], job["id"])
             self.assertEqual(job["status"], "completed", job)
             self.assertEqual(json.loads(queue.output_path(project["id"], job["id"]).read_text())["frame"], 0)
             imported = queue.proposals(project["id"], job["id"])
@@ -95,3 +101,76 @@ class ModelQueueTests(unittest.TestCase):
                 row = json.loads(archive.read(tracks_path))
                 self.assertEqual(row["label_origin"]["model_run_ids"], [job["id"]])
                 self.assertEqual(row["confidence"], 0.75)
+
+    def test_empty_adapter_output_retains_model_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "No detections")
+            video = data / "clip.mp4"
+            video.write_bytes(b"video")
+            import_video(data, project["id"], video, "clip.mp4", width=10, height=10, duration=1, fps=1)
+            model = {
+                "name": "fixture",
+                "version": "1",
+                "weights_uri": "synthetic://weights",
+                "weights_sha256": "0" * 64,
+                "code_revision": "1234567",
+                "config_sha256": "1" * 64,
+                "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
+            }
+            metadata = {"schema_version": "cvbench.model-output/v1", "model": model}
+            script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + '\\n')"
+            queue = ModelQueue(data)
+            submitted = queue.submit(
+                project["id"],
+                [sys.executable, "-c", script, "{output}", json.dumps(metadata, separators=(",", ":"))],
+            )
+            job = self._wait(queue, project["id"], submitted["id"])
+            self.assertEqual(job["status"], "completed", job)
+            self.assertEqual(job["model"], model)
+            self.assertEqual(queue.proposals(project["id"], job["id"])["summary"]["boxes"], 0)
+
+    def test_proposals_accept_missing_confidence_and_reject_boolean_confidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Confidence")
+            video = data / "clip.mp4"
+            video.write_bytes(b"video")
+            import_video(data, project["id"], video, "clip.mp4", width=10, height=10, duration=1, fps=1)
+            model = {
+                "name": "fixture",
+                "version": "1",
+                "weights_uri": "synthetic://weights",
+                "weights_sha256": "0" * 64,
+                "code_revision": "1234567",
+                "config_sha256": "1" * 64,
+                "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
+            }
+            proposal = {
+                "schema_version": "cvbench.model-proposal/v1",
+                "frame": 0,
+                "track_id": "person-1",
+                "class_id": "person",
+                "bbox_xyxy": [1, 1, 5, 8],
+                "model": model,
+            }
+            script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + '\\n')"
+            queue = ModelQueue(data)
+            submitted = queue.submit(
+                project["id"],
+                [sys.executable, "-c", script, "{output}", json.dumps(proposal, separators=(",", ":"))],
+            )
+            job = self._wait(queue, project["id"], submitted["id"])
+            imported = queue.proposals(project["id"], job["id"])
+            self.assertNotIn("confidence", imported["boxes"][0])
+
+            for confidence in (True, False):
+                with self.subTest(confidence=confidence):
+                    proposal["confidence"] = confidence
+                    submitted = queue.submit(
+                        project["id"],
+                        [sys.executable, "-c", script, "{output}", json.dumps(proposal, separators=(",", ":"))],
+                    )
+                    job = self._wait(queue, project["id"], submitted["id"])
+                    with self.assertRaises(StudioError):
+                        queue.proposals(project["id"], job["id"])
