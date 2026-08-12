@@ -172,5 +172,6 @@ class ModelQueueTests(unittest.TestCase):
                         [sys.executable, "-c", script, "{output}", json.dumps(proposal, separators=(",", ":"))],
                     )
                     job = self._wait(queue, project["id"], submitted["id"])
+                    self.assertEqual(job["status"], "completed", job)
                     with self.assertRaises(StudioError):
                         queue.proposals(project["id"], job["id"])
