@@ -19,9 +19,14 @@ from cvbench_studio.core import (
     validate_annotations,
     video_path,
 )
+from cvbench_studio.sampling import sample_frame_indices
 
 
 class CoreTests(unittest.TestCase):
+    def test_sample_frame_indices_are_deterministic_and_unique(self):
+        self.assertEqual(sample_frame_indices(300, 30.0, 5.0), list(range(0, 300, 6)))
+        self.assertEqual(sample_frame_indices(2, 30.0, 5.0), [0])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.data = Path(self.temporary.name)

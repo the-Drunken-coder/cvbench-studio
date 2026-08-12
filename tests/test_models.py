@@ -62,6 +62,7 @@ class ModelQueueTests(unittest.TestCase):
             self.assertEqual(json.loads(queue.output_path(project["id"], job["id"]).read_text())["frame"], 0)
             imported = queue.proposals(project["id"], job["id"])
             self.assertEqual(imported["summary"]["boxes"], 1)
+            self.assertEqual(imported["boxes"][0]["confidence"], 0.75)
             self.assertEqual(imported["tracks"][0]["label_origin"]["kind"], "model_generated")
             save_annotations(
                 data,
@@ -93,3 +94,4 @@ class ModelQueueTests(unittest.TestCase):
                 tracks_path = f"clips/{project['id']}/tracks.jsonl"
                 row = json.loads(archive.read(tracks_path))
                 self.assertEqual(row["label_origin"]["model_run_ids"], [job["id"]])
+                self.assertEqual(row["confidence"], 0.75)

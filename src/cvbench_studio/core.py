@@ -233,6 +233,11 @@ def validate_annotations(project: dict[str, Any], annotations: dict[str, Any]) -
         if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in coordinates):
             errors.append(f"box {index} has a non-finite coordinate")
             continue
+        confidence = box.get("confidence")
+        if confidence is not None and (
+            not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0 <= confidence <= 1
+        ):
+            errors.append(f"box {index} has an invalid confidence")
         x1, y1, x2, y2 = coordinates
         if x1 < 0 or y1 < 0 or x2 <= x1 or y2 <= y1:
             errors.append(f"box {index} has invalid geometry")
@@ -285,21 +290,24 @@ def canonical_rows(project: dict[str, Any], annotations: dict[str, Any]) -> list
         track_id, frame = box["track_id"], box["frame"]
         coordinates = [round(float(value), 3) for value in box["bbox_xyxy"]]
         origin = tracks[track_id].get("label_origin", {"kind": "human", "model_run_ids": []})
-        rows.append(
-            {
-                "schema_version": "cvbench.track-annotation/v1",
-                "clip_id": project["id"],
-                "frame_index": frame,
-                "source_timestamp_ns": round(frame / fps * 1_000_000_000),
-                "track_id": track_id,
-                "class_id": tracks[track_id]["class_id"],
-                "bbox_xyxy": coordinates,
-                "occlusion": tracks[track_id].get("occlusion", "unknown"),
-                "truncated": coordinates[0] <= 0 or coordinates[1] <= 0
-                or coordinates[2] >= width or coordinates[3] >= height,
-                "label_origin": origin,
-            }
-        )
+        row = {
+            "schema_version": "cvbench.track-annotation/v1",
+            "clip_id": project["id"],
+            "frame_index": frame,
+            "source_timestamp_ns": round(frame / fps * 1_000_000_000),
+            "track_id": track_id,
+            "class_id": tracks[track_id]["class_id"],
+            "bbox_xyxy": coordinates,
+            "occlusion": tracks[track_id].get("occlusion", "unknown"),
+            "truncated": coordinates[0] <= 0
+            or coordinates[1] <= 0
+            or coordinates[2] >= width
+            or coordinates[3] >= height,
+            "label_origin": origin,
+        }
+        if "confidence" in box:
+            row["confidence"] = round(float(box["confidence"]), 6)
+        rows.append(row)
     return rows
 
 

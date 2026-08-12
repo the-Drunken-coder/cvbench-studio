@@ -99,6 +99,7 @@ class ModelQueue:
             track_id = row.get("track_id")
             class_id = row.get("class_id")
             box = row.get("bbox_xyxy")
+            confidence = row.get("confidence")
             if not isinstance(frame, int) or frame < 0 or frame >= video["frame_count"]:
                 raise StudioError(f"proposal line {line_number} has an invalid frame")
             if not isinstance(track_id, str) or not TRACK_ID.fullmatch(track_id):
@@ -114,6 +115,8 @@ class ModelQueue:
             x1, y1, x2, y2 = box
             if x1 < 0 or y1 < 0 or x2 <= x1 or y2 <= y1 or x2 > video["width"] or y2 > video["height"]:
                 raise StudioError(f"proposal line {line_number} has out-of-bounds geometry")
+            if not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                raise StudioError(f"proposal line {line_number} has an invalid confidence")
             rows.append(row)
         track_map: dict[str, dict[str, Any]] = {}
         boxes = []
@@ -144,6 +147,7 @@ class ModelQueue:
                     "frame": row["frame"],
                     "track_id": imported_id,
                     "bbox_xyxy": [round(float(value), 3) for value in row["bbox_xyxy"]],
+                    "confidence": round(float(row["confidence"]), 6),
                 }
             )
         return {

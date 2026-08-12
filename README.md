@@ -86,6 +86,26 @@ docker build -t cvbench-studio .
 docker run --rm -p 8765:8765 -v "$PWD/.cvbench-studio:/data" cvbench-studio
 ```
 
+The reusable `examples/yolox_onnx_adapter.py` samples a video at a declared
+rate and emits confidence-bearing COCO-class proposals in source pixels. It
+hashes the exact ONNX weights and canonical configuration into every Studio
+job. Install the optional adapter dependencies, then run it through the normal
+explicit review flow:
+
+```bash
+.venv/bin/pip install -e '.[model-adapters]'
+cvbench-studio --data-dir .cvbench-studio run-model PROJECT_ID -- \
+  python examples/yolox_onnx_adapter.py \
+  --video '{video}' --output '{output}' \
+  --model /path/to/yolox_x.onnx \
+  --weights-uri docker://image@sha256:digest#models/yolox_x.onnx \
+  --code-revision "$(git rev-parse HEAD)"
+```
+
+The adapter is a detector, not a source of reviewed truth. It intentionally
+assigns frame-local proposal IDs; Studio users must correct classes and boxes
+and decide whether cross-frame identities should be linked.
+
 ## Validate and export from the CLI
 
 ```bash
