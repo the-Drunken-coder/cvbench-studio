@@ -105,8 +105,8 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(StudioError):
             save_annotations(self.data, self.project["id"], annotations)
 
-    def test_validation_rejects_boolean_confidence(self):
-        for confidence in (True, False):
+    def test_validation_rejects_invalid_optional_confidence(self):
+        for confidence in (True, False, None):
             with self.subTest(confidence=confidence):
                 annotations = self.annotations()
                 annotations["boxes"][0]["confidence"] = confidence

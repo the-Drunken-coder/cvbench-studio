@@ -130,7 +130,7 @@ class ModelQueueTests(unittest.TestCase):
             self.assertEqual(job["model"], model)
             self.assertEqual(queue.proposals(project["id"], job["id"])["summary"]["boxes"], 0)
 
-    def test_proposals_accept_missing_confidence_and_reject_boolean_confidence(self):
+    def test_proposals_accept_missing_confidence_and_reject_invalid_values(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
             project = create_project(data, "Confidence")
@@ -164,7 +164,7 @@ class ModelQueueTests(unittest.TestCase):
             imported = queue.proposals(project["id"], job["id"])
             self.assertNotIn("confidence", imported["boxes"][0])
 
-            for confidence in (True, False):
+            for confidence in (True, False, None):
                 with self.subTest(confidence=confidence):
                     proposal["confidence"] = confidence
                     submitted = queue.submit(

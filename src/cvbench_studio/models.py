@@ -115,8 +115,9 @@ class ModelQueue:
             x1, y1, x2, y2 = box
             if x1 < 0 or y1 < 0 or x2 <= x1 or y2 <= y1 or x2 > video["width"] or y2 > video["height"]:
                 raise StudioError(f"proposal line {line_number} has out-of-bounds geometry")
-            if confidence is not None and (
-                isinstance(confidence, bool)
+            if "confidence" in row and (
+                confidence is None
+                or isinstance(confidence, bool)
                 or not isinstance(confidence, (int, float))
                 or not math.isfinite(confidence)
                 or not 0 <= confidence <= 1

@@ -176,30 +176,34 @@ def main() -> int:
     selected_indices = iter_sample_frame_indices(fps, args.sample_fps)
     selected_frame = next(selected_indices)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("w") as output:
-        metadata = {"schema_version": "cvbench.model-output/v1", "model": model}
-        output.write(json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n")
-        frame_index = 0
-        while True:
-            ok, image = capture.read()
-            if not ok:
-                break
-            if frame_index == selected_frame:
-                detections = detector.detect(image, args.confidence_threshold, args.nms_threshold)
-                for index, detection in enumerate(detections):
-                    row = {
-                        "schema_version": "cvbench.model-proposal/v1",
-                        "frame": frame_index,
-                        "track_id": f"detection-{frame_index:06d}-{index:03d}",
-                        "class_id": detection.class_id,
-                        "bbox_xyxy": [round(value, 3) for value in detection.box],
-                        "confidence": round(detection.confidence, 6),
-                        "model": model,
-                    }
-                    output.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
-                selected_frame = next(selected_indices)
-            frame_index += 1
-    capture.release()
+    frame_index = 0
+    try:
+        with args.output.open("w") as output:
+            metadata = {"schema_version": "cvbench.model-output/v1", "model": model}
+            output.write(json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n")
+            while True:
+                ok, image = capture.read()
+                if not ok:
+                    break
+                if frame_index == selected_frame:
+                    detections = detector.detect(image, args.confidence_threshold, args.nms_threshold)
+                    for index, detection in enumerate(detections):
+                        row = {
+                            "schema_version": "cvbench.model-proposal/v1",
+                            "frame": frame_index,
+                            "track_id": f"detection-{frame_index:06d}-{index:03d}",
+                            "class_id": detection.class_id,
+                            "bbox_xyxy": [round(value, 3) for value in detection.box],
+                            "confidence": round(detection.confidence, 6),
+                            "model": model,
+                        }
+                        output.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+                    selected_frame = next(selected_indices)
+                frame_index += 1
+    finally:
+        capture.release()
+    if frame_index == 0:
+        raise ValueError(f"cannot decode any frames from source video: {args.video}")
     return 0
 
 

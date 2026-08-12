@@ -234,8 +234,9 @@ def validate_annotations(project: dict[str, Any], annotations: dict[str, Any]) -
             errors.append(f"box {index} has a non-finite coordinate")
             continue
         confidence = box.get("confidence")
-        if confidence is not None and (
-            isinstance(confidence, bool)
+        if "confidence" in box and (
+            confidence is None
+            or isinstance(confidence, bool)
             or not isinstance(confidence, (int, float))
             or not math.isfinite(confidence)
             or not 0 <= confidence <= 1
