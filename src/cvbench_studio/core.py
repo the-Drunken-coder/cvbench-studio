@@ -175,6 +175,21 @@ def import_video(
     return project
 
 
+def extend_video_frame_count(data_dir: Path, project_id: str, frame_count: int) -> dict[str, Any]:
+    """Persist a larger decoder-observed frame count without shortening the video."""
+    if isinstance(frame_count, bool) or not isinstance(frame_count, int) or frame_count <= 0:
+        raise StudioError("frame count must be a positive integer")
+    project = load_project(data_dir, project_id)
+    video = project.get("video")
+    if not video:
+        raise StudioError("project has no video")
+    if frame_count > video["frame_count"]:
+        video["frame_count"] = frame_count
+        project["updated_at"] = _now()
+        _write_json(project_dir(data_dir, project_id) / "project.json", project)
+    return project
+
+
 def video_path(data_dir: Path, project_id: str) -> Path:
     project = load_project(data_dir, project_id)
     if not project["video"]:

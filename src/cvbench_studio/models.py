@@ -14,7 +14,7 @@ from pathlib import Path
 from queue import Queue
 from typing import Any
 
-from .core import StudioError, load_project, project_dir, video_path
+from .core import StudioError, extend_video_frame_count, load_project, project_dir, video_path
 
 TRACK_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -100,7 +100,7 @@ class ModelQueue:
             class_id = row.get("class_id")
             box = row.get("bbox_xyxy")
             confidence = row.get("confidence")
-            if not isinstance(frame, int) or frame < 0 or frame >= video["frame_count"]:
+            if isinstance(frame, bool) or not isinstance(frame, int) or frame < 0:
                 raise StudioError(f"proposal line {line_number} has an invalid frame")
             if not isinstance(track_id, str) or not TRACK_ID.fullmatch(track_id):
                 raise StudioError(f"proposal line {line_number} has an invalid track_id")
@@ -124,6 +124,11 @@ class ModelQueue:
             ):
                 raise StudioError(f"proposal line {line_number} has an invalid confidence")
             rows.append(row)
+        frame_count = max([video["frame_count"], *(row["frame"] + 1 for row in rows)])
+        if frame_count > video["frame_count"]:
+            with self._lock:
+                project = extend_video_frame_count(self.data_dir, project_id, frame_count)
+            video = project["video"]
         track_map: dict[str, dict[str, Any]] = {}
         boxes = []
         seen = set()
@@ -158,6 +163,7 @@ class ModelQueue:
             boxes.append(imported_box)
         return {
             "job_id": job_id,
+            "frame_count": video["frame_count"],
             "tracks": list(track_map.values()),
             "boxes": sorted(boxes, key=lambda item: (item["frame"], item["track_id"])),
             "summary": {

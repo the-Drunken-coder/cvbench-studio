@@ -222,28 +222,28 @@ $("#overlay").addEventListener("pointerdown", event => {
   const hit = hitBox(point);
   if (hit) {
     state.selectedTrack = hit.track_id;
-    markBoxModelAssisted(hit);
     const [x1, y1, x2, y2] = hit.bbox_xyxy;
     const resize = Math.abs(point[0] - x2) < 18 && Math.abs(point[1] - y2) < 18;
     state.interaction = {kind: resize ? "resize" : "move", point, box: hit, original: [...hit.bbox_xyxy]};
     renderTracks();
   } else {
-    markSelectedTrackModelAssisted();
     const existing = selectedBox();
     if (existing && !confirm("Replace this track's box on the current frame?")) return;
+    markSelectedTrackModelAssisted();
     if (existing) state.annotations.boxes = state.annotations.boxes.filter(box => box !== existing);
     const box = {frame: currentFrame(), track_id: state.selectedTrack, bbox_xyxy: [point[0], point[1], point[0], point[1]]};
     state.annotations.boxes.push(box);
     state.interaction = {kind: "draw", point, box};
+    markDirty();
   }
   $("#overlay").setPointerCapture(event.pointerId);
-  markDirty();
 });
 
 $("#overlay").addEventListener("pointermove", event => {
   if (!state.interaction) return;
   const point = canvasPoint(event);
   const action = state.interaction;
+  const previous = [...action.box.bbox_xyxy];
   if (action.kind === "draw") {
     action.box.bbox_xyxy = [
       Math.min(action.point[0], point[0]), Math.min(action.point[1], point[1]),
@@ -267,6 +267,10 @@ $("#overlay").addEventListener("pointermove", event => {
     action.box.bbox_xyxy[2] = point[0];
     action.box.bbox_xyxy[3] = point[1];
     clampBox(action.box.bbox_xyxy);
+  }
+  if (action.box.bbox_xyxy.some((value, index) => value !== previous[index])) {
+    if (action.kind !== "draw") markBoxModelAssisted(action.box);
+    markDirty();
   }
   renderOverlay();
 });
@@ -487,6 +491,7 @@ async function refreshJobs() {
 async function importProposals(jobId) {
   try {
     const proposals = await api(`/api/projects/${state.project.id}/jobs/${jobId}/proposals`);
+    state.project.video.frame_count = proposals.frame_count;
     const summary = proposals.summary;
     if (!summary.boxes) return toast("The completed adapter produced no proposal rows.");
     const message = [
