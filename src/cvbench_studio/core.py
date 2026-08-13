@@ -208,7 +208,7 @@ def extend_video_frame_count(
     *,
     expected_video_sha256: str,
 ) -> dict[str, Any]:
-    """Persist the exact decoder-observed frame count for the expected video."""
+    """Persist the decoder count without invalidating existing annotations."""
     if isinstance(frame_count, bool) or not isinstance(frame_count, int) or frame_count <= 0:
         raise StudioError("frame count must be a positive integer")
     with PROJECT_WRITE_LOCK:
@@ -218,8 +218,14 @@ def extend_video_frame_count(
             raise StudioError("project has no video")
         if video["sha256"] != expected_video_sha256:
             raise StudioError("model job belongs to a different source video")
-        if frame_count != video["frame_count"]:
-            video["frame_count"] = frame_count
+        annotations = load_annotations(data_dir, project_id)
+        annotated_frame_count = 1 + max(
+            (box["frame"] for box in annotations["boxes"]),
+            default=-1,
+        )
+        safe_frame_count = max(frame_count, annotated_frame_count)
+        if safe_frame_count != video["frame_count"]:
+            video["frame_count"] = safe_frame_count
             project["updated_at"] = _now()
             _write_json(project_dir(data_dir, project_id) / "project.json", project)
         return project

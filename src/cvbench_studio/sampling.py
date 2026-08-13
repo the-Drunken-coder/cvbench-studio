@@ -4,6 +4,14 @@ import math
 from collections.abc import Iterator
 
 
+def non_empty_string(value: str) -> str:
+    """Parse a required, whitespace-normalized provenance value."""
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("value must not be empty")
+    return normalized
+
+
 def stride_aligned_size(value: str, stride: int = 32) -> int:
     """Parse a positive model input size aligned to the model's largest stride."""
     if isinstance(stride, bool) or not isinstance(stride, int) or stride <= 0:

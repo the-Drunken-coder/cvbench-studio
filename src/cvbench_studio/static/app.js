@@ -283,7 +283,10 @@ function finishInteraction() {
     markDirty();
   }
   const [x1, y1, x2, y2] = box.bbox_xyxy;
-  if (x2 - x1 < 3 || y2 - y1 < 3) state.annotations.boxes = state.annotations.boxes.filter(item => item !== box);
+  if (x2 - x1 < 3 || y2 - y1 < 3) {
+    state.annotations.boxes = state.annotations.boxes.filter(item => item !== box);
+    markDirty();
+  }
   state.interaction = null;
   renderTracks();
   updateFrame();

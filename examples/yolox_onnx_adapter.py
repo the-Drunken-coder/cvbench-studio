@@ -12,7 +12,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from cvbench_studio.sampling import iter_sample_frame_indices, probability, stride_aligned_size
+from cvbench_studio.sampling import (
+    iter_sample_frame_indices,
+    non_empty_string,
+    probability,
+    stride_aligned_size,
+)
 
 
 @dataclass(frozen=True)
@@ -118,14 +123,21 @@ class YoloX:
             scores = class_scores[:, coco_id]
             for index in np.flatnonzero(scores >= minimum_score):
                 raw = boxes[index]
+                if (
+                    not np.isfinite(raw).all()
+                    or raw[2] <= 0
+                    or raw[3] <= 0
+                    or raw[0] >= width
+                    or raw[1] >= height
+                ):
+                    continue
                 box = (
-                    min(max(0.0, float(raw[0])), float(width - 1)),
-                    min(max(0.0, float(raw[1])), float(height - 1)),
-                    min(max(1.0, float(raw[2])), float(width)),
-                    min(max(1.0, float(raw[3])), float(height)),
+                    max(0.0, float(raw[0])),
+                    max(0.0, float(raw[1])),
+                    min(float(raw[2]), float(width)),
+                    min(float(raw[3]), float(height)),
                 )
-                box = (box[0], box[1], max(box[0] + 1.0, box[2]), max(box[1] + 1.0, box[3]))
-                if box[2] <= width and box[3] <= height and area(box) >= 16:
+                if area(box) >= 16:
                     detections.append(Detection(box, class_id, float(scores[index])))
         return nms(detections, nms_threshold)
 
@@ -135,10 +147,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--video", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--weights-uri", required=True)
-    parser.add_argument("--code-revision", required=True)
-    parser.add_argument("--model-name", default="Megvii YOLOX-X COCO 640 ONNX")
-    parser.add_argument("--model-version", default="YOLOX-X")
+    parser.add_argument("--weights-uri", type=non_empty_string, required=True)
+    parser.add_argument("--code-revision", type=non_empty_string, required=True)
+    parser.add_argument(
+        "--model-name", type=non_empty_string, default="Megvii YOLOX-X COCO 640 ONNX"
+    )
+    parser.add_argument("--model-version", type=non_empty_string, default="YOLOX-X")
     parser.add_argument("--class", dest="classes", action="append", default=[])
     parser.add_argument("--sample-fps", type=float, default=5.0)
     parser.add_argument("--input-size", type=stride_aligned_size, default=640)

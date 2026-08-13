@@ -25,6 +25,7 @@ from cvbench_studio.core import (
 )
 from cvbench_studio.sampling import (
     iter_sample_frame_indices,
+    non_empty_string,
     probability,
     sample_frame_indices,
     stride_aligned_size,
@@ -62,6 +63,12 @@ class CoreTests(unittest.TestCase):
         for invalid in ("nan", "inf", "-0.1", "1.1"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 probability(invalid)
+
+    def test_adapter_provenance_values_must_not_be_empty(self):
+        self.assertEqual(non_empty_string("  YOLOX-X  "), "YOLOX-X")
+        for invalid in ("", "   ", "\t"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                non_empty_string(invalid)
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -191,6 +198,19 @@ class CoreTests(unittest.TestCase):
         )
         save_annotations(self.data, self.project["id"], self.annotations())
         self.assertEqual(load_project(self.data, self.project["id"])["video"]["frame_count"], 100)
+
+    def test_decoder_frame_count_preserves_annotated_tail(self):
+        annotations = self.annotations()
+        annotations["boxes"][1]["frame"] = 59
+        save_annotations(self.data, self.project["id"], annotations)
+        updated = extend_video_frame_count(
+            self.data,
+            self.project["id"],
+            50,
+            expected_video_sha256=self.project["video"]["sha256"],
+        )
+        self.assertEqual(updated["video"]["frame_count"], 60)
+        self.assertTrue(validate_annotations(updated, load_annotations(self.data, self.project["id"]))["valid"])
 
     def test_validation_rejects_duplicate_and_out_of_bounds_boxes(self):
         annotations = self.annotations()
