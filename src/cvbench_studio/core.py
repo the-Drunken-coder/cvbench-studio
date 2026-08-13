@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import tempfile
@@ -161,7 +162,10 @@ def import_video(
             backup = None
             if destination.exists():
                 backup = destination_dir / f".{safe_name}.{uuid.uuid4().hex}.backup"
-                destination.replace(backup)
+                try:
+                    os.link(destination, backup)
+                except OSError:
+                    shutil.copyfile(destination, backup)
             try:
                 temporary.replace(destination)
                 project["video"] = {
@@ -177,9 +181,10 @@ def import_video(
                 project["updated_at"] = _now()
                 _write_json(project_dir(data_dir, project_id) / "project.json", project)
             except Exception:
-                destination.unlink(missing_ok=True)
                 if backup is not None:
                     backup.replace(destination)
+                else:
+                    destination.unlink(missing_ok=True)
                 raise
             stale_paths = [backup] if backup is not None else []
             if previous_video and previous_video["filename"] != safe_name:
@@ -220,7 +225,11 @@ def extend_video_frame_count(
         return project
 
 
-def snapshot_video(data_dir: Path, project_id: str, destination: Path) -> dict[str, Any]:
+def snapshot_video(
+    data_dir: Path,
+    project_id: str,
+    destination_stem: Path,
+) -> tuple[dict[str, Any], Path]:
     """Copy the exact imported video into an isolated model-job input."""
     with PROJECT_WRITE_LOCK:
         project = load_project(data_dir, project_id)
@@ -228,6 +237,10 @@ def snapshot_video(data_dir: Path, project_id: str, destination: Path) -> dict[s
         if not video:
             raise StudioError("project has no video")
         source = video_path(data_dir, project_id)
+        suffix = Path(video["filename"]).suffix
+        if not re.fullmatch(r"\.[A-Za-z0-9]{1,16}", suffix):
+            suffix = ".video"
+        destination = destination_stem.parent / f"{destination_stem.name}{suffix}"
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copyfile(source, destination)
@@ -237,7 +250,7 @@ def snapshot_video(data_dir: Path, project_id: str, destination: Path) -> dict[s
         except Exception:
             destination.unlink(missing_ok=True)
             raise
-        return video
+        return video, destination
 
 
 def video_path(data_dir: Path, project_id: str) -> Path:

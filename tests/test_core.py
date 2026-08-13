@@ -129,8 +129,14 @@ class CoreTests(unittest.TestCase):
     def test_failed_same_name_import_preserves_previous_video(self):
         replacement = self.data / "replacement.mp4"
         replacement.write_bytes(b"replacement")
+        observed_during_commit = []
+
+        def fail_metadata_write(*_args):
+            observed_during_commit.append(video_path(self.data, self.project["id"]).read_bytes())
+            raise OSError("disk full")
+
         with (
-            patch("cvbench_studio.core._write_json", side_effect=OSError("disk full")),
+            patch("cvbench_studio.core._write_json", side_effect=fail_metadata_write),
             self.assertRaisesRegex(OSError, "disk full"),
         ):
             import_video(
@@ -143,12 +149,12 @@ class CoreTests(unittest.TestCase):
                 duration=3,
                 fps=24,
             )
+        self.assertEqual(observed_during_commit, [b"replacement"])
         self.assertEqual(load_project(self.data, self.project["id"])["video"], self.project["video"])
         self.assertEqual(video_path(self.data, self.project["id"]).read_bytes(), b"fake-video-one")
 
     def test_model_snapshot_does_not_alias_project_video(self):
-        snapshot = self.data / "snapshot.mp4"
-        snapshot_video(self.data, self.project["id"], snapshot)
+        _, snapshot = snapshot_video(self.data, self.project["id"], self.data / "snapshot")
         snapshot.chmod(0o644)
         snapshot.write_bytes(b"mutated")
         self.assertEqual(video_path(self.data, self.project["id"]).read_bytes(), b"fake-video-one")

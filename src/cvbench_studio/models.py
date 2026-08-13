@@ -43,12 +43,13 @@ class ModelQueue:
         if not argv or not all(isinstance(part, str) and part for part in argv):
             raise StudioError("model command must contain an executable")
         job_id = uuid.uuid4().hex
-        input_path = self.input_path(project_id, job_id)
-        video = snapshot_video(self.data_dir, project_id, input_path)
+        input_stem = self._input_stem(project_id, job_id)
+        video, input_path = snapshot_video(self.data_dir, project_id, input_stem)
         job = {
             "schema_version": "cvbench.model-job/v1",
             "id": job_id,
             "project_id": project_id,
+            "input_filename": input_path.name,
             "video_sha256": video["sha256"],
             "command": argv,
             "status": "queued",
@@ -86,8 +87,15 @@ class ModelQueue:
         return project_dir(self.data_dir, project_id) / "jobs" / f"{job_id}.jsonl"
 
     def input_path(self, project_id: str, job_id: str) -> Path:
-        self._job_path(project_id, job_id)
-        return project_dir(self.data_dir, project_id) / "jobs" / f"{job_id}.input.mp4"
+        job = self.get(project_id, job_id)
+        filename = job.get("input_filename")
+        if (
+            not isinstance(filename, str)
+            or Path(filename).name != filename
+            or not filename.startswith(f"{job_id}.input.")
+        ):
+            raise StudioError("model job has an invalid input filename")
+        return project_dir(self.data_dir, project_id) / "jobs" / filename
 
     def proposals(self, project_id: str, job_id: str) -> dict[str, Any]:
         job = self.get(project_id, job_id)
@@ -102,7 +110,7 @@ class ModelQueue:
         if job.get("video_sha256") != video["sha256"]:
             raise StudioError("model job belongs to a different source video")
         decoded_frame_count = job.get("decoded_frame_count")
-        frame_count = max(video["frame_count"], decoded_frame_count or 0)
+        frame_count = decoded_frame_count or video["frame_count"]
         rows = []
         for line_number, line in enumerate(self.output_path(project_id, job_id).read_text().splitlines(), 1):
             if not line:
@@ -202,6 +210,10 @@ class ModelQueue:
         if len(job_id) != 32 or any(character not in "0123456789abcdef" for character in job_id):
             raise StudioError("invalid job id")
         return project_dir(self.data_dir, project_id) / "jobs" / f"{job_id}.json"
+
+    def _input_stem(self, project_id: str, job_id: str) -> Path:
+        self._job_path(project_id, job_id)
+        return project_dir(self.data_dir, project_id) / "jobs" / f"{job_id}.input"
 
     def _write(self, project_id: str, job: dict[str, Any]) -> None:
         path = self._job_path(project_id, job["id"])

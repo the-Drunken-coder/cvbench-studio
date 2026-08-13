@@ -270,7 +270,7 @@ $("#overlay").addEventListener("pointermove", event => {
   renderOverlay();
 });
 
-$("#overlay").addEventListener("pointerup", () => {
+function finishInteraction() {
   if (!state.interaction) return;
   const action = state.interaction;
   const box = action.box;
@@ -287,7 +287,10 @@ $("#overlay").addEventListener("pointerup", () => {
   state.interaction = null;
   renderTracks();
   updateFrame();
-});
+}
+
+$("#overlay").addEventListener("pointerup", finishInteraction);
+$("#overlay").addEventListener("pointercancel", finishInteraction);
 
 $("#new-project").addEventListener("click", () => $("#project-dialog").showModal());
 $("#empty-new-project").addEventListener("click", () => $("#project-dialog").showModal());
