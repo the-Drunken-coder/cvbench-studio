@@ -208,7 +208,7 @@ def extend_video_frame_count(
     *,
     expected_video_sha256: str,
 ) -> dict[str, Any]:
-    """Persist a larger decoder-observed frame count without shortening the video."""
+    """Persist the exact decoder-observed frame count for the expected video."""
     if isinstance(frame_count, bool) or not isinstance(frame_count, int) or frame_count <= 0:
         raise StudioError("frame count must be a positive integer")
     with PROJECT_WRITE_LOCK:
@@ -218,7 +218,7 @@ def extend_video_frame_count(
             raise StudioError("project has no video")
         if video["sha256"] != expected_video_sha256:
             raise StudioError("model job belongs to a different source video")
-        if frame_count > video["frame_count"]:
+        if frame_count != video["frame_count"]:
             video["frame_count"] = frame_count
             project["updated_at"] = _now()
             _write_json(project_dir(data_dir, project_id) / "project.json", project)

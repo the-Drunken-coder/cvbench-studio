@@ -184,12 +184,12 @@ class ModelQueue:
             if row.get("confidence") is not None:
                 imported_box["confidence"] = float(row["confidence"])
             boxes.append(imported_box)
-        if frame_count > video["frame_count"]:
+        if decoded_frame_count is not None and decoded_frame_count != video["frame_count"]:
             with self._lock:
                 project = extend_video_frame_count(
                     self.data_dir,
                     project_id,
-                    frame_count,
+                    decoded_frame_count,
                     expected_video_sha256=job["video_sha256"],
                 )
             video = project["video"]
