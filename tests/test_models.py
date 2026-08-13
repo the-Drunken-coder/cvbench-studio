@@ -188,6 +188,7 @@ class ModelQueueTests(unittest.TestCase):
     def test_windows_adapter_is_supervised_before_it_resumes(self):
         process = Mock(pid=123, stdout=None, stderr=None)
         events = []
+        project = Path("project")
         with (
             patch("cvbench_studio.models.os.name", "nt"),
             patch("cvbench_studio.models.subprocess.Popen", return_value=process) as popen,
@@ -202,7 +203,7 @@ class ModelQueueTests(unittest.TestCase):
         ):
             started, windows_job = _start_adapter_process(
                 ["adapter"],
-                cwd=Path("project"),
+                cwd=project,
                 environment={"CVD": "1"},
             )
         self.assertIs(started, process)
