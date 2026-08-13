@@ -20,7 +20,7 @@ from cvbench_studio.core import (
     validate_annotations,
     video_path,
 )
-from cvbench_studio.sampling import iter_sample_frame_indices, sample_frame_indices
+from cvbench_studio.sampling import iter_sample_frame_indices, sample_frame_indices, stride_aligned_size
 
 
 class CoreTests(unittest.TestCase):
@@ -29,6 +29,21 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(sample_frame_indices(2, 30.0, 5.0), [0])
         self.assertEqual(list(islice(iter_sample_frame_indices(30.0, 5.0), 5)), [0, 6, 12, 18, 24])
         self.assertEqual(list(islice(iter_sample_frame_indices(30.0, 60.0), 5)), [0, 1, 2, 3, 4])
+
+    def test_sampling_rejects_non_finite_rates_and_caps_oversampling(self):
+        for invalid in (float("inf"), float("nan"), 0.0, -1.0):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    next(iter_sample_frame_indices(30.0, invalid))
+                with self.assertRaises(ValueError):
+                    sample_frame_indices(30, 30.0, invalid)
+        self.assertEqual(list(islice(iter_sample_frame_indices(30.0, 1_000_000.0), 5)), [0, 1, 2, 3, 4])
+
+    def test_model_input_size_requires_stride_alignment(self):
+        self.assertEqual(stride_aligned_size("640"), 640)
+        for invalid in ("0", "-32", "641"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                stride_aligned_size(invalid)
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

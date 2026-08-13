@@ -12,7 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from cvbench_studio.sampling import iter_sample_frame_indices
+from cvbench_studio.sampling import iter_sample_frame_indices, stride_aligned_size
 
 
 @dataclass(frozen=True)
@@ -141,7 +141,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-version", default="YOLOX-X")
     parser.add_argument("--class", dest="classes", action="append", default=[])
     parser.add_argument("--sample-fps", type=float, default=5.0)
-    parser.add_argument("--input-size", type=int, default=640)
+    parser.add_argument("--input-size", type=stride_aligned_size, default=640)
     parser.add_argument("--confidence-threshold", type=float, default=0.25)
     parser.add_argument("--nms-threshold", type=float, default=0.45)
     parser.add_argument("--license-spdx", default="Apache-2.0")
