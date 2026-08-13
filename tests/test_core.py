@@ -131,6 +131,29 @@ class CoreTests(unittest.TestCase):
             )
         self.assertEqual(load_project(self.data, self.project["id"])["video"]["frame_count"], 60)
 
+    def test_metadata_saves_preserve_extended_frame_count(self):
+        digest = self.project["video"]["sha256"]
+        extend_video_frame_count(
+            self.data,
+            self.project["id"],
+            100,
+            expected_video_sha256=digest,
+        )
+        save_source_metadata(
+            self.data,
+            self.project["id"],
+            {
+                "title": "Updated source",
+                "uri": "synthetic://studio/updated",
+                "license_spdx": "MIT",
+                "license_name": "MIT License",
+                "license_url": "https://opensource.org/license/mit",
+                "license_text": "MIT",
+            },
+        )
+        save_annotations(self.data, self.project["id"], self.annotations())
+        self.assertEqual(load_project(self.data, self.project["id"])["video"]["frame_count"], 100)
+
     def test_validation_rejects_duplicate_and_out_of_bounds_boxes(self):
         annotations = self.annotations()
         annotations["boxes"].append(

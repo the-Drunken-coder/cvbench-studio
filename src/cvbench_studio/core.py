@@ -123,11 +123,12 @@ def save_source_metadata(data_dir: Path, project_id: str, source: dict[str, Any]
         raise StudioError(f"source metadata is missing: {', '.join(missing)}")
     if not re.fullmatch(r"[A-Za-z0-9.+-]{2,80}", normalized["license_spdx"]):
         raise StudioError("license SPDX id is invalid")
-    project = load_project(data_dir, project_id)
-    project["source"] = normalized
-    project["updated_at"] = _now()
-    _write_json(project_dir(data_dir, project_id) / "project.json", project)
-    return project
+    with PROJECT_WRITE_LOCK:
+        project = load_project(data_dir, project_id)
+        project["source"] = normalized
+        project["updated_at"] = _now()
+        _write_json(project_dir(data_dir, project_id) / "project.json", project)
+        return project
 
 
 def import_video(
@@ -292,19 +293,20 @@ def validate_annotations(project: dict[str, Any], annotations: dict[str, Any]) -
 
 
 def save_annotations(data_dir: Path, project_id: str, annotations: dict[str, Any]) -> dict[str, Any]:
-    project = load_project(data_dir, project_id)
-    result = validate_annotations(project, annotations)
-    if not result["valid"]:
-        raise StudioError("; ".join(result["errors"]))
-    normalized = {
-        "schema_version": SCHEMA,
-        "tracks": sorted(annotations["tracks"], key=lambda item: item["id"]),
-        "boxes": sorted(annotations["boxes"], key=lambda item: (item["frame"], item["track_id"])),
-    }
-    _write_json(project_dir(data_dir, project_id) / "annotations.json", normalized)
-    project["updated_at"] = _now()
-    _write_json(project_dir(data_dir, project_id) / "project.json", project)
-    return result
+    with PROJECT_WRITE_LOCK:
+        project = load_project(data_dir, project_id)
+        result = validate_annotations(project, annotations)
+        if not result["valid"]:
+            raise StudioError("; ".join(result["errors"]))
+        normalized = {
+            "schema_version": SCHEMA,
+            "tracks": sorted(annotations["tracks"], key=lambda item: item["id"]),
+            "boxes": sorted(annotations["boxes"], key=lambda item: (item["frame"], item["track_id"])),
+        }
+        _write_json(project_dir(data_dir, project_id) / "annotations.json", normalized)
+        project["updated_at"] = _now()
+        _write_json(project_dir(data_dir, project_id) / "project.json", project)
+        return result
 
 
 def canonical_rows(project: dict[str, Any], annotations: dict[str, Any]) -> list[dict[str, Any]]:

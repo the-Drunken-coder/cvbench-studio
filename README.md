@@ -101,8 +101,8 @@ explicit review flow:
 
 ```bash
 .venv/bin/pip install -e '.[model-adapters]'
-cvbench-studio --data-dir .cvbench-studio run-model PROJECT_ID -- \
-  python /absolute/path/to/cvbench-studio/examples/yolox_onnx_adapter.py \
+.venv/bin/cvbench-studio --data-dir .cvbench-studio run-model PROJECT_ID -- \
+  .venv/bin/python /absolute/path/to/cvbench-studio/examples/yolox_onnx_adapter.py \
   --video '{video}' --output '{output}' \
   --model /path/to/yolox_x.onnx \
   --weights-uri docker://image@sha256:digest#models/yolox_x.onnx \
