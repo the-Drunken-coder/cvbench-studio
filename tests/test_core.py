@@ -20,7 +20,12 @@ from cvbench_studio.core import (
     validate_annotations,
     video_path,
 )
-from cvbench_studio.sampling import iter_sample_frame_indices, sample_frame_indices, stride_aligned_size
+from cvbench_studio.sampling import (
+    iter_sample_frame_indices,
+    probability,
+    sample_frame_indices,
+    stride_aligned_size,
+)
 
 
 class CoreTests(unittest.TestCase):
@@ -44,6 +49,13 @@ class CoreTests(unittest.TestCase):
         for invalid in ("0", "-32", "641"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 stride_aligned_size(invalid)
+
+    def test_adapter_thresholds_require_finite_probabilities(self):
+        self.assertEqual(probability("0"), 0.0)
+        self.assertEqual(probability("1"), 1.0)
+        for invalid in ("nan", "inf", "-0.1", "1.1"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                probability(invalid)
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

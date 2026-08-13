@@ -42,11 +42,16 @@ class ModelQueue:
         argv = shlex.split(command) if isinstance(command, str) else list(command)
         if not argv or not all(isinstance(part, str) and part for part in argv):
             raise StudioError("model command must contain an executable")
+        project = load_project(self.data_dir, project_id)
+        video = project.get("video")
+        if not video:
+            raise StudioError("project has no video")
         job_id = uuid.uuid4().hex
         job = {
             "schema_version": "cvbench.model-job/v1",
             "id": job_id,
             "project_id": project_id,
+            "video_sha256": video["sha256"],
             "command": argv,
             "status": "queued",
             "created_at": _now(),
@@ -88,6 +93,8 @@ class ModelQueue:
         video = project.get("video")
         if not video:
             raise StudioError("project has no video")
+        if job.get("video_sha256") != video["sha256"]:
+            raise StudioError("model job belongs to a different source video")
         decoded_frame_count = job.get("decoded_frame_count")
         frame_count = max(video["frame_count"], decoded_frame_count or 0)
         rows = []

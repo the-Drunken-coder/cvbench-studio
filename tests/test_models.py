@@ -131,6 +131,39 @@ class ModelQueueTests(unittest.TestCase):
             self.assertEqual(job["model"], model)
             self.assertEqual(queue.proposals(project["id"], job["id"])["summary"]["boxes"], 0)
 
+    def test_completed_job_cannot_import_into_replaced_video(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Replacement")
+            video = data / "first.mp4"
+            video.write_bytes(b"first")
+            import_video(data, project["id"], video, "first.mp4", width=10, height=10, duration=1, fps=1)
+            model = {
+                "name": "fixture",
+                "version": "1",
+                "weights_uri": "synthetic://weights",
+                "weights_sha256": "0" * 64,
+                "code_revision": "1234567",
+                "config_sha256": "1" * 64,
+                "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
+            }
+            metadata = {"schema_version": "cvbench.model-output/v1", "model": model}
+            script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + '\\n')"
+            queue = ModelQueue(data)
+            submitted = queue.submit(
+                project["id"],
+                [sys.executable, "-c", script, "{output}", json.dumps(metadata, separators=(",", ":"))],
+            )
+            job = self._wait(queue, project["id"], submitted["id"])
+            self.assertEqual(job["status"], "completed", job)
+            replacement = data / "second.mp4"
+            replacement.write_bytes(b"second")
+            import_video(
+                data, project["id"], replacement, "second.mp4", width=10, height=10, duration=2, fps=1
+            )
+            with self.assertRaisesRegex(StudioError, "different source video"):
+                queue.proposals(project["id"], job["id"])
+
     def test_tail_proposal_extends_underreported_project_frame_count(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)

@@ -12,6 +12,14 @@ def stride_aligned_size(value: str, stride: int = 32) -> int:
     return size
 
 
+def probability(value: str) -> float:
+    """Parse a finite probability in the closed unit interval."""
+    result = float(value)
+    if not math.isfinite(result) or not 0 <= result <= 1:
+        raise ValueError("probability must be finite and between 0 and 1")
+    return result
+
+
 def iter_sample_frame_indices(source_fps: float, sample_fps: float) -> Iterator[int]:
     """Yield deterministic sample indices without trusting container frame counts."""
     if not math.isfinite(source_fps) or not math.isfinite(sample_fps) or source_fps <= 0 or sample_fps <= 0:
