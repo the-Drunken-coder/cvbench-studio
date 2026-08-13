@@ -20,6 +20,8 @@ from .core import StudioError, extend_video_frame_count, load_project, project_d
 TRACK_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 WINDOWS_CREATE_SUSPENDED = 0x00000004
+OUTPUT_READ_BYTES = 64 * 1024
+MAX_OUTPUT_LINE_BYTES = 1024 * 1024
 
 
 def _now() -> str:
@@ -558,6 +560,76 @@ class ModelQueue:
                     return digest.hexdigest()
                 digest.update(chunk)
 
+    def _inspect_adapter_output(self, output: Path) -> tuple[str, Any, int | None]:
+        """Hash and validate bounded JSONL records with cooperative shutdown."""
+        digest = hashlib.sha256()
+        pending = b""
+        line_number = 0
+        model = None
+        decoded_frame_count = None
+
+        def inspect_line(raw_line: bytes) -> None:
+            nonlocal model, decoded_frame_count
+            line = raw_line[:-1] if raw_line.endswith(b"\r") else raw_line
+            if not line:
+                return
+            if len(line) > MAX_OUTPUT_LINE_BYTES:
+                raise StudioError(f"adapter output line {line_number} is too large")
+            if self._closing.is_set():
+                raise StudioError("Studio closed before the adapter completed")
+            try:
+                row = json.loads(line)
+            except UnicodeDecodeError as exc:
+                raise StudioError("adapter output is not valid UTF-8") from exc
+            except json.JSONDecodeError as exc:
+                raise StudioError(f"invalid proposal JSONL on line {line_number}") from exc
+            if self._closing.is_set():
+                raise StudioError("Studio closed before the adapter completed")
+            if row.get("schema_version") in {
+                "cvbench.model-output/v1",
+                "cvbench.model-proposal/v1",
+            }:
+                candidate_model = row.get("model")
+                self._validate_model(candidate_model, line_number)
+                if model is not None and candidate_model != model:
+                    raise StudioError("proposal rows contain inconsistent model provenance")
+                model = candidate_model
+            if row.get("schema_version") == "cvbench.model-output/v1" and "decoded_frame_count" in row:
+                candidate_count = row["decoded_frame_count"]
+                if (
+                    isinstance(candidate_count, bool)
+                    or not isinstance(candidate_count, int)
+                    or candidate_count <= 0
+                ):
+                    raise StudioError(
+                        f"adapter output line {line_number} has an invalid decoded frame count"
+                    )
+                if decoded_frame_count is not None and candidate_count != decoded_frame_count:
+                    raise StudioError("adapter output has inconsistent decoded frame counts")
+                decoded_frame_count = candidate_count
+
+        with output.open("rb") as stream:
+            while True:
+                if self._closing.is_set():
+                    raise StudioError("Studio closed before the adapter completed")
+                chunk = stream.read(OUTPUT_READ_BYTES)
+                if self._closing.is_set():
+                    raise StudioError("Studio closed before the adapter completed")
+                if not chunk:
+                    break
+                digest.update(chunk)
+                lines = (pending + chunk).split(b"\n")
+                pending = lines.pop()
+                for raw_line in lines:
+                    line_number += 1
+                    inspect_line(raw_line)
+                if len(pending) > MAX_OUTPUT_LINE_BYTES:
+                    raise StudioError(f"adapter output line {line_number + 1} is too large")
+            if pending:
+                line_number += 1
+                inspect_line(pending)
+        return digest.hexdigest(), model, decoded_frame_count
+
     def _run(self) -> None:
         while True:
             queued = self._queue.get()
@@ -638,45 +710,8 @@ class ModelQueue:
                 job["status"] = "failed"
                 job["error"] = "adapter did not create {output}"
             else:
-                output_body = output.read_bytes()
-                try:
-                    output_text = output_body.decode()
-                except UnicodeDecodeError as exc:
-                    raise StudioError("adapter output is not valid UTF-8") from exc
-                model = None
-                decoded_frame_count = None
-                for line_number, line in enumerate(output_text.splitlines(), 1):
-                    if line:
-                        try:
-                            row = json.loads(line)
-                        except json.JSONDecodeError as exc:
-                            raise StudioError(f"invalid proposal JSONL on line {line_number}") from exc
-                        if row.get("schema_version") in {
-                            "cvbench.model-output/v1",
-                            "cvbench.model-proposal/v1",
-                        }:
-                            candidate_model = row.get("model")
-                            self._validate_model(candidate_model, line_number)
-                            if model is not None and candidate_model != model:
-                                raise StudioError("proposal rows contain inconsistent model provenance")
-                            model = candidate_model
-                        if (
-                            row.get("schema_version") == "cvbench.model-output/v1"
-                            and "decoded_frame_count" in row
-                        ):
-                            candidate_count = row["decoded_frame_count"]
-                            if (
-                                isinstance(candidate_count, bool)
-                                or not isinstance(candidate_count, int)
-                                or candidate_count <= 0
-                            ):
-                                raise StudioError(
-                                    f"adapter output line {line_number} has an invalid decoded frame count"
-                                )
-                            if decoded_frame_count is not None and candidate_count != decoded_frame_count:
-                                raise StudioError("adapter output has inconsistent decoded frame counts")
-                            decoded_frame_count = candidate_count
-                job["raw_output_sha256"] = hashlib.sha256(output_body).hexdigest()
+                output_sha256, model, decoded_frame_count = self._inspect_adapter_output(output)
+                job["raw_output_sha256"] = output_sha256
                 job["model"] = model
                 if decoded_frame_count is not None:
                     job["decoded_frame_count"] = decoded_frame_count

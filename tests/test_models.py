@@ -285,6 +285,37 @@ class ModelQueueTests(unittest.TestCase):
         ):
             queue._snapshot_sha256(Path("snapshot.mp4"))
 
+    def test_output_loading_and_parsing_stop_when_queue_closes(self):
+        queue = object.__new__(ModelQueue)
+        queue._closing = threading.Event()
+
+        class ClosingStream(BytesIO):
+            def read(self, size=-1):
+                chunk = super().read(size)
+                queue._closing.set()
+                return chunk
+
+        with (
+            patch.object(Path, "open", return_value=ClosingStream(b"{}\n")),
+            self.assertRaisesRegex(StudioError, "closed before the adapter completed"),
+        ):
+            queue._inspect_adapter_output(Path("output.jsonl"))
+
+        queue._closing.clear()
+        loads_original = json.loads
+
+        def parse_then_close(value):
+            row = loads_original(value)
+            queue._closing.set()
+            return row
+
+        with (
+            patch.object(Path, "open", return_value=BytesIO(b"{}\n")),
+            patch("cvbench_studio.models.json.loads", side_effect=parse_then_close),
+            self.assertRaisesRegex(StudioError, "closed before the adapter completed"),
+        ):
+            queue._inspect_adapter_output(Path("output.jsonl"))
+
     def test_proposals_reject_output_changed_after_adapter_execution(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
@@ -347,18 +378,19 @@ class ModelQueueTests(unittest.TestCase):
             ).encode()
             script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(bytes.fromhex(sys.argv[2]))"
             queue = ModelQueue(data)
-            real_read_bytes = Path.read_bytes
+            open_original = Path.open
             replaced = False
 
-            def read_then_replace(path: Path) -> bytes:
+            def open_then_replace(path: Path, *args, **kwargs):
                 nonlocal replaced
-                body = real_read_bytes(path)
-                if path.suffix == ".jsonl" and not replaced:
+                stream = open_original(path, *args, **kwargs)
+                if path.suffix == ".jsonl" and args and args[0] == "rb" and not replaced:
+                    path.rename(path.with_suffix(".original.jsonl"))
                     path.write_bytes(replacement_body)
                     replaced = True
-                return body
+                return stream
 
-            with patch.object(Path, "read_bytes", read_then_replace):
+            with patch.object(Path, "open", open_then_replace):
                 submitted = queue.submit(
                     project["id"],
                     [sys.executable, "-c", script, "{output}", original_body.hex()],
