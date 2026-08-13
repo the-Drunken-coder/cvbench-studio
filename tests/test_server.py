@@ -6,9 +6,10 @@ import threading
 import unittest
 import urllib.request
 from pathlib import Path
+from unittest.mock import Mock, patch
 
-from cvbench_studio.core import import_video
-from cvbench_studio.server import make_server
+from cvbench_studio.core import StudioError, import_video
+from cvbench_studio.server import StudioServer, make_server
 
 
 class ServerTests(unittest.TestCase):
@@ -59,3 +60,14 @@ class ServerTests(unittest.TestCase):
             stylesheet = response.read().decode()
 
         self.assertIn("[hidden] { display: none !important; }", stylesheet)
+
+    def test_server_socket_closes_when_model_queue_shutdown_fails(self):
+        server = object.__new__(StudioServer)
+        server.model_queue = Mock()
+        server.model_queue.close.side_effect = StudioError("queue shutdown failed")
+        with (
+            patch("http.server.HTTPServer.server_close") as close_socket,
+            self.assertRaisesRegex(StudioError, "queue shutdown failed"),
+        ):
+            server.server_close()
+        close_socket.assert_called_once_with()

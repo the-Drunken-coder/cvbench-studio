@@ -14,6 +14,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["ruff>=0.9"]
+model-adapters = ["numpy>=2,<3", "opencv-python-headless>=4.10,<5"]
 
 [project.scripts]
 cvbench-studio = "cvbench_studio.cli:main"

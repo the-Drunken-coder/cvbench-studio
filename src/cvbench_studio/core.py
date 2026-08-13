@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import tempfile
+import threading
 import uuid
 import zipfile
 from datetime import UTC, datetime
@@ -16,6 +18,7 @@ from typing import Any
 PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 SCHEMA = "cvbench.studio-annotations/v1"
 DEFAULT_CLASSES = ["person", "vehicle", "dog", "sports_ball"]
+PROJECT_WRITE_LOCK = threading.RLock()
 
 
 class StudioError(ValueError):
@@ -121,11 +124,12 @@ def save_source_metadata(data_dir: Path, project_id: str, source: dict[str, Any]
         raise StudioError(f"source metadata is missing: {', '.join(missing)}")
     if not re.fullmatch(r"[A-Za-z0-9.+-]{2,80}", normalized["license_spdx"]):
         raise StudioError("license SPDX id is invalid")
-    project = load_project(data_dir, project_id)
-    project["source"] = normalized
-    project["updated_at"] = _now()
-    _write_json(project_dir(data_dir, project_id) / "project.json", project)
-    return project
+    with PROJECT_WRITE_LOCK:
+        project = load_project(data_dir, project_id)
+        project["source"] = normalized
+        project["updated_at"] = _now()
+        _write_json(project_dir(data_dir, project_id) / "project.json", project)
+        return project
 
 
 def import_video(
@@ -152,27 +156,113 @@ def import_video(
     try:
         shutil.copyfile(source, temporary)
         digest = _sha256_file(temporary)
-        for old in destination_dir.iterdir():
-            if old.is_file() and old != temporary:
-                old.unlink()
-        temporary.replace(destination)
+        with PROJECT_WRITE_LOCK:
+            project = load_project(data_dir, project_id)
+            previous_video = project.get("video")
+            backup = None
+            if destination.exists():
+                backup = destination_dir / f".{safe_name}.{uuid.uuid4().hex}.backup"
+                try:
+                    os.link(destination, backup)
+                except OSError:
+                    shutil.copyfile(destination, backup)
+            try:
+                temporary.replace(destination)
+                project["video"] = {
+                    "filename": safe_name,
+                    "width": width,
+                    "height": height,
+                    "duration_seconds": duration,
+                    "fps": fps,
+                    "frame_count": max(1, round(duration * fps)),
+                    "sha256": digest,
+                    "size_bytes": destination.stat().st_size,
+                }
+                project["updated_at"] = _now()
+                _write_json(project_dir(data_dir, project_id) / "project.json", project)
+            except Exception:
+                if backup is not None:
+                    backup.replace(destination)
+                else:
+                    destination.unlink(missing_ok=True)
+                raise
+            stale_paths = [backup] if backup is not None else []
+            if previous_video and previous_video["filename"] != safe_name:
+                stale_paths.append(destination_dir / previous_video["filename"])
+            for old in stale_paths:
+                try:
+                    old.unlink(missing_ok=True)
+                except OSError:
+                    # Metadata already points to the new video; a stale file is safer than false failure.
+                    pass
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
-    project = load_project(data_dir, project_id)
-    project["video"] = {
-        "filename": safe_name,
-        "width": width,
-        "height": height,
-        "duration_seconds": duration,
-        "fps": fps,
-        "frame_count": max(1, round(duration * fps)),
-        "sha256": digest,
-        "size_bytes": destination.stat().st_size,
-    }
-    project["updated_at"] = _now()
-    _write_json(project_dir(data_dir, project_id) / "project.json", project)
     return project
+
+
+def extend_video_frame_count(
+    data_dir: Path,
+    project_id: str,
+    frame_count: int,
+    *,
+    expected_video_sha256: str,
+) -> dict[str, Any]:
+    """Persist the decoder count without invalidating existing annotations."""
+    if isinstance(frame_count, bool) or not isinstance(frame_count, int) or frame_count <= 0:
+        raise StudioError("frame count must be a positive integer")
+    with PROJECT_WRITE_LOCK:
+        project = load_project(data_dir, project_id)
+        video = project.get("video")
+        if not video:
+            raise StudioError("project has no video")
+        if video["sha256"] != expected_video_sha256:
+            raise StudioError("model job belongs to a different source video")
+        annotations = load_annotations(data_dir, project_id)
+        annotated_frame_count = 1 + max(
+            (box["frame"] for box in annotations["boxes"]),
+            default=-1,
+        )
+        safe_frame_count = max(frame_count, annotated_frame_count)
+        if safe_frame_count != video["frame_count"]:
+            video["frame_count"] = safe_frame_count
+            project["updated_at"] = _now()
+            _write_json(project_dir(data_dir, project_id) / "project.json", project)
+        return project
+
+
+def snapshot_video(
+    data_dir: Path,
+    project_id: str,
+    destination_stem: Path,
+) -> tuple[dict[str, Any], Path]:
+    """Copy the exact imported video into an isolated model-job input."""
+    with PROJECT_WRITE_LOCK:
+        project = load_project(data_dir, project_id)
+        video = project.get("video")
+        if not video:
+            raise StudioError("project has no video")
+        source = video_path(data_dir, project_id)
+        suffix = Path(video["filename"]).suffix
+        if not re.fullmatch(r"\.[A-Za-z0-9]{1,16}", suffix):
+            suffix = ".video"
+        destination = destination_stem.parent / f"{destination_stem.name}{suffix}"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copyfile(source, destination)
+            if _sha256_file(destination) != video["sha256"]:
+                raise StudioError("project video changed while queuing model job")
+            _protect_model_snapshot(destination)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+        return video, destination
+
+
+def _protect_model_snapshot(path: Path) -> None:
+    """Make model input advisory-read-only where cleanup remains portable."""
+    if os.name != "nt":
+        path.chmod(0o444)
 
 
 def video_path(data_dir: Path, project_id: str) -> Path:
@@ -233,6 +323,15 @@ def validate_annotations(project: dict[str, Any], annotations: dict[str, Any]) -
         if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in coordinates):
             errors.append(f"box {index} has a non-finite coordinate")
             continue
+        confidence = box.get("confidence")
+        if "confidence" in box and (
+            confidence is None
+            or isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not math.isfinite(confidence)
+            or not 0 <= confidence <= 1
+        ):
+            errors.append(f"box {index} has an invalid confidence")
         x1, y1, x2, y2 = coordinates
         if x1 < 0 or y1 < 0 or x2 <= x1 or y2 <= y1:
             errors.append(f"box {index} has invalid geometry")
@@ -256,19 +355,20 @@ def validate_annotations(project: dict[str, Any], annotations: dict[str, Any]) -
 
 
 def save_annotations(data_dir: Path, project_id: str, annotations: dict[str, Any]) -> dict[str, Any]:
-    project = load_project(data_dir, project_id)
-    result = validate_annotations(project, annotations)
-    if not result["valid"]:
-        raise StudioError("; ".join(result["errors"]))
-    normalized = {
-        "schema_version": SCHEMA,
-        "tracks": sorted(annotations["tracks"], key=lambda item: item["id"]),
-        "boxes": sorted(annotations["boxes"], key=lambda item: (item["frame"], item["track_id"])),
-    }
-    _write_json(project_dir(data_dir, project_id) / "annotations.json", normalized)
-    project["updated_at"] = _now()
-    _write_json(project_dir(data_dir, project_id) / "project.json", project)
-    return result
+    with PROJECT_WRITE_LOCK:
+        project = load_project(data_dir, project_id)
+        result = validate_annotations(project, annotations)
+        if not result["valid"]:
+            raise StudioError("; ".join(result["errors"]))
+        normalized = {
+            "schema_version": SCHEMA,
+            "tracks": sorted(annotations["tracks"], key=lambda item: item["id"]),
+            "boxes": sorted(annotations["boxes"], key=lambda item: (item["frame"], item["track_id"])),
+        }
+        _write_json(project_dir(data_dir, project_id) / "annotations.json", normalized)
+        project["updated_at"] = _now()
+        _write_json(project_dir(data_dir, project_id) / "project.json", project)
+        return result
 
 
 def canonical_rows(project: dict[str, Any], annotations: dict[str, Any]) -> list[dict[str, Any]]:
@@ -285,21 +385,24 @@ def canonical_rows(project: dict[str, Any], annotations: dict[str, Any]) -> list
         track_id, frame = box["track_id"], box["frame"]
         coordinates = [round(float(value), 3) for value in box["bbox_xyxy"]]
         origin = tracks[track_id].get("label_origin", {"kind": "human", "model_run_ids": []})
-        rows.append(
-            {
-                "schema_version": "cvbench.track-annotation/v1",
-                "clip_id": project["id"],
-                "frame_index": frame,
-                "source_timestamp_ns": round(frame / fps * 1_000_000_000),
-                "track_id": track_id,
-                "class_id": tracks[track_id]["class_id"],
-                "bbox_xyxy": coordinates,
-                "occlusion": tracks[track_id].get("occlusion", "unknown"),
-                "truncated": coordinates[0] <= 0 or coordinates[1] <= 0
-                or coordinates[2] >= width or coordinates[3] >= height,
-                "label_origin": origin,
-            }
-        )
+        row = {
+            "schema_version": "cvbench.track-annotation/v1",
+            "clip_id": project["id"],
+            "frame_index": frame,
+            "source_timestamp_ns": round(frame / fps * 1_000_000_000),
+            "track_id": track_id,
+            "class_id": tracks[track_id]["class_id"],
+            "bbox_xyxy": coordinates,
+            "occlusion": tracks[track_id].get("occlusion", "unknown"),
+            "truncated": coordinates[0] <= 0
+            or coordinates[1] <= 0
+            or coordinates[2] >= width
+            or coordinates[3] >= height,
+            "label_origin": origin,
+        }
+        if "confidence" in box:
+            row["confidence"] = float(box["confidence"])
+        rows.append(row)
     return rows
 
 

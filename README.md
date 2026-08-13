@@ -76,6 +76,13 @@ proposals** action. Imported output is marked `model_generated`; a manual box
 edit changes its origin to `model_assisted`. Neither state is a certification
 or review approval.
 
+Adapters should emit one `cvbench.model-output/v1` metadata row containing the
+model provenance before any `cvbench.model-proposal/v1` rows. This preserves
+the model audit trail even when a successful run finds no objects. Adapters
+that discover the exact media length while decoding should emit a final metadata
+row with the same model and a positive integer `decoded_frame_count`; Studio
+uses that decoder-observed value instead of inferring media length from detections.
+
 On Apple Silicon, run Studio and a PyTorch adapter natively so the adapter can
 select `mps`. Studio does not import PyTorch, select a model, download weights,
 or claim that a model is bundled. Docker is an optional Linux deployment path
@@ -85,6 +92,26 @@ and does not provide macOS MPS acceleration:
 docker build -t cvbench-studio .
 docker run --rm -p 8765:8765 -v "$PWD/.cvbench-studio:/data" cvbench-studio
 ```
+
+The reusable `examples/yolox_onnx_adapter.py` samples a video at a declared
+rate and emits confidence-bearing COCO-class proposals in source pixels. It
+hashes the exact ONNX weights and canonical configuration into every Studio
+job. Install the optional adapter dependencies, then run it through the normal
+explicit review flow:
+
+```bash
+.venv/bin/pip install -e '.[model-adapters]'
+.venv/bin/cvbench-studio --data-dir .cvbench-studio run-model PROJECT_ID -- \
+  .venv/bin/python /absolute/path/to/cvbench-studio/examples/yolox_onnx_adapter.py \
+  --video '{video}' --output '{output}' \
+  --model /path/to/yolox_x.onnx \
+  --weights-uri docker://image@sha256:digest#models/yolox_x.onnx \
+  --code-revision "$(git rev-parse HEAD)"
+```
+
+The adapter is a detector, not a source of reviewed truth. It intentionally
+assigns frame-local proposal IDs; Studio users must correct classes and boxes
+and decide whether cross-frame identities should be linked.
 
 ## Validate and export from the CLI
 

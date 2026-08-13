@@ -139,6 +139,11 @@ function markSelectedTrackModelAssisted() {
   }
 }
 
+function markBoxModelAssisted(box) {
+  markSelectedTrackModelAssisted();
+  if (box) delete box.confidence;
+}
+
 function updateFrame() {
   const video = $("#video");
   $("#frame").textContent = `Frame ${currentFrame()}`;
@@ -216,23 +221,34 @@ $("#overlay").addEventListener("pointerdown", event => {
   const point = canvasPoint(event);
   const hit = hitBox(point);
   if (hit) {
+    const previousSelectedTrack = state.selectedTrack;
     state.selectedTrack = hit.track_id;
-    markSelectedTrackModelAssisted();
     const [x1, y1, x2, y2] = hit.bbox_xyxy;
     const resize = Math.abs(point[0] - x2) < 18 && Math.abs(point[1] - y2) < 18;
-    state.interaction = {kind: resize ? "resize" : "move", point, box: hit, original: [...hit.bbox_xyxy]};
+    state.interaction = {
+      kind: resize ? "resize" : "move",
+      point,
+      box: hit,
+      original: [...hit.bbox_xyxy],
+      previousSelectedTrack,
+      wasDirty: state.dirty,
+    };
     renderTracks();
   } else {
-    markSelectedTrackModelAssisted();
     const existing = selectedBox();
     if (existing && !confirm("Replace this track's box on the current frame?")) return;
+    const track = state.annotations.tracks.find(item => item.id === state.selectedTrack);
+    const originalLabelOrigin = track?.label_origin ? structuredClone(track.label_origin) : null;
+    const wasDirty = state.dirty;
+    markSelectedTrackModelAssisted();
+    const replacedIndex = existing ? state.annotations.boxes.indexOf(existing) : -1;
     if (existing) state.annotations.boxes = state.annotations.boxes.filter(box => box !== existing);
     const box = {frame: currentFrame(), track_id: state.selectedTrack, bbox_xyxy: [point[0], point[1], point[0], point[1]]};
     state.annotations.boxes.push(box);
-    state.interaction = {kind: "draw", point, box};
+    state.interaction = {kind: "draw", point, box, replaced: existing, replacedIndex, originalLabelOrigin, wasDirty};
+    markDirty();
   }
   $("#overlay").setPointerCapture(event.pointerId);
-  markDirty();
 });
 
 $("#overlay").addEventListener("pointermove", event => {
@@ -266,16 +282,62 @@ $("#overlay").addEventListener("pointermove", event => {
   renderOverlay();
 });
 
-$("#overlay").addEventListener("pointerup", () => {
+function finishInteraction() {
   if (!state.interaction) return;
-  const box = state.interaction.box;
+  const action = state.interaction;
+  const box = action.box;
   box.bbox_xyxy = box.bbox_xyxy.map(value => Math.round(value * 1000) / 1000);
   const [x1, y1, x2, y2] = box.bbox_xyxy;
-  if (x2 - x1 < 3 || y2 - y1 < 3) state.annotations.boxes = state.annotations.boxes.filter(item => item !== box);
+  if (x2 - x1 < 3 || y2 - y1 < 3) {
+    if (action.kind === "draw") {
+      state.annotations.boxes = state.annotations.boxes.filter(item => item !== box);
+      if (action.replaced) state.annotations.boxes.splice(action.replacedIndex, 0, action.replaced);
+      const track = state.annotations.tracks.find(item => item.id === action.box.track_id);
+      if (track) {
+        if (action.originalLabelOrigin) track.label_origin = action.originalLabelOrigin;
+        else delete track.label_origin;
+      }
+      markDirty(action.wasDirty);
+    } else {
+      box.bbox_xyxy = [...action.original];
+      state.selectedTrack = action.previousSelectedTrack;
+      markDirty(action.wasDirty);
+    }
+  } else if (
+    action.kind !== "draw"
+    && box.bbox_xyxy.some((value, index) => value !== action.original[index])
+  ) {
+    markBoxModelAssisted(box);
+    markDirty();
+  }
   state.interaction = null;
   renderTracks();
   updateFrame();
-});
+}
+
+function cancelInteraction() {
+  if (!state.interaction) return;
+  const action = state.interaction;
+  if (action.kind === "draw") {
+    state.annotations.boxes = state.annotations.boxes.filter(item => item !== action.box);
+    if (action.replaced) state.annotations.boxes.splice(action.replacedIndex, 0, action.replaced);
+    const track = state.annotations.tracks.find(item => item.id === action.box.track_id);
+    if (track) {
+      if (action.originalLabelOrigin) track.label_origin = action.originalLabelOrigin;
+      else delete track.label_origin;
+    }
+  } else {
+    action.box.bbox_xyxy = [...action.original];
+    state.selectedTrack = action.previousSelectedTrack;
+  }
+  state.interaction = null;
+  markDirty(action.wasDirty);
+  renderTracks();
+  updateFrame();
+}
+
+$("#overlay").addEventListener("pointerup", finishInteraction);
+$("#overlay").addEventListener("pointercancel", cancelInteraction);
 
 $("#new-project").addEventListener("click", () => $("#project-dialog").showModal());
 $("#empty-new-project").addEventListener("click", () => $("#project-dialog").showModal());
@@ -340,10 +402,19 @@ $("#copy-previous").addEventListener("click", () => {
     .filter(box => box.track_id === state.selectedTrack && box.frame < frame)
     .sort((a, b) => b.frame - a.frame)[0];
   if (!prior) return toast("No earlier box exists for this track.");
-  markSelectedTrackModelAssisted();
   const existing = selectedBox();
-  if (existing) existing.bbox_xyxy = [...prior.bbox_xyxy];
-  else state.annotations.boxes.push({frame, track_id: state.selectedTrack, bbox_xyxy: [...prior.bbox_xyxy]});
+  if (existing) {
+    if (existing.bbox_xyxy.every((value, index) => value === prior.bbox_xyxy[index])) {
+      return toast("The current box already matches the previous box.");
+    }
+    markSelectedTrackModelAssisted();
+    existing.bbox_xyxy = [...prior.bbox_xyxy];
+    delete existing.confidence;
+  }
+  else {
+    markSelectedTrackModelAssisted();
+    state.annotations.boxes.push({frame, track_id: state.selectedTrack, bbox_xyxy: [...prior.bbox_xyxy]});
+  }
   markDirty();
   renderTracks();
   updateFrame();
@@ -478,7 +549,9 @@ async function refreshJobs() {
 
 async function importProposals(jobId) {
   try {
+    if (state.dirty) await save();
     const proposals = await api(`/api/projects/${state.project.id}/jobs/${jobId}/proposals`);
+    state.project.video.frame_count = proposals.frame_count;
     const summary = proposals.summary;
     if (!summary.boxes) return toast("The completed adapter produced no proposal rows.");
     const message = [
