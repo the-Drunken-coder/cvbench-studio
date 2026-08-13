@@ -349,13 +349,19 @@ $("#copy-previous").addEventListener("click", () => {
     .filter(box => box.track_id === state.selectedTrack && box.frame < frame)
     .sort((a, b) => b.frame - a.frame)[0];
   if (!prior) return toast("No earlier box exists for this track.");
-  markSelectedTrackModelAssisted();
   const existing = selectedBox();
   if (existing) {
+    if (existing.bbox_xyxy.every((value, index) => value === prior.bbox_xyxy[index])) {
+      return toast("The current box already matches the previous box.");
+    }
+    markSelectedTrackModelAssisted();
     existing.bbox_xyxy = [...prior.bbox_xyxy];
     delete existing.confidence;
   }
-  else state.annotations.boxes.push({frame, track_id: state.selectedTrack, bbox_xyxy: [...prior.bbox_xyxy]});
+  else {
+    markSelectedTrackModelAssisted();
+    state.annotations.boxes.push({frame, track_id: state.selectedTrack, bbox_xyxy: [...prior.bbox_xyxy]});
+  }
   markDirty();
   renderTracks();
   updateFrame();

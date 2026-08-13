@@ -125,10 +125,6 @@ class ModelQueue:
                 raise StudioError(f"proposal line {line_number} has an invalid confidence")
             rows.append(row)
         frame_count = max([video["frame_count"], *(row["frame"] + 1 for row in rows)])
-        if frame_count > video["frame_count"]:
-            with self._lock:
-                project = extend_video_frame_count(self.data_dir, project_id, frame_count)
-            video = project["video"]
         track_map: dict[str, dict[str, Any]] = {}
         boxes = []
         seen = set()
@@ -161,6 +157,10 @@ class ModelQueue:
             if row.get("confidence") is not None:
                 imported_box["confidence"] = round(float(row["confidence"]), 6)
             boxes.append(imported_box)
+        if frame_count > video["frame_count"]:
+            with self._lock:
+                project = extend_video_frame_count(self.data_dir, project_id, frame_count)
+            video = project["video"]
         return {
             "job_id": job_id,
             "frame_count": video["frame_count"],

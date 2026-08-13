@@ -167,6 +167,40 @@ class ModelQueueTests(unittest.TestCase):
             self.assertEqual(imported["boxes"][0]["frame"], 1)
             self.assertEqual(load_project(data, project["id"])["video"]["frame_count"], 2)
 
+    def test_rejected_tail_proposals_do_not_change_project_frame_count(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Rejected tail")
+            video = data / "clip.mp4"
+            video.write_bytes(b"video")
+            import_video(data, project["id"], video, "clip.mp4", width=10, height=10, duration=1, fps=1)
+            model = {
+                "name": "fixture",
+                "version": "1",
+                "weights_uri": "synthetic://weights",
+                "weights_sha256": "0" * 64,
+                "code_revision": "1234567",
+                "config_sha256": "1" * 64,
+                "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
+            }
+            proposal = {
+                "schema_version": "cvbench.model-proposal/v1",
+                "frame": 1,
+                "track_id": "person-1",
+                "class_id": "person",
+                "bbox_xyxy": [1, 1, 5, 8],
+                "model": model,
+            }
+            payload = "\n".join(json.dumps(proposal, separators=(",", ":")) for _ in range(2))
+            script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + '\\n')"
+            queue = ModelQueue(data)
+            submitted = queue.submit(project["id"], [sys.executable, "-c", script, "{output}", payload])
+            job = self._wait(queue, project["id"], submitted["id"])
+            self.assertEqual(job["status"], "completed", job)
+            with self.assertRaises(StudioError):
+                queue.proposals(project["id"], job["id"])
+            self.assertEqual(load_project(data, project["id"])["video"]["frame_count"], 1)
+
     def test_proposals_accept_missing_confidence_and_reject_invalid_values(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
