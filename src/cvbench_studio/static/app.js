@@ -224,16 +224,25 @@ $("#overlay").addEventListener("pointerdown", event => {
     state.selectedTrack = hit.track_id;
     const [x1, y1, x2, y2] = hit.bbox_xyxy;
     const resize = Math.abs(point[0] - x2) < 18 && Math.abs(point[1] - y2) < 18;
-    state.interaction = {kind: resize ? "resize" : "move", point, box: hit, original: [...hit.bbox_xyxy]};
+    state.interaction = {
+      kind: resize ? "resize" : "move",
+      point,
+      box: hit,
+      original: [...hit.bbox_xyxy],
+      wasDirty: state.dirty,
+    };
     renderTracks();
   } else {
     const existing = selectedBox();
     if (existing && !confirm("Replace this track's box on the current frame?")) return;
+    const track = state.annotations.tracks.find(item => item.id === state.selectedTrack);
+    const originalLabelOrigin = track?.label_origin ? structuredClone(track.label_origin) : null;
+    const wasDirty = state.dirty;
     markSelectedTrackModelAssisted();
     if (existing) state.annotations.boxes = state.annotations.boxes.filter(box => box !== existing);
     const box = {frame: currentFrame(), track_id: state.selectedTrack, bbox_xyxy: [point[0], point[1], point[0], point[1]]};
     state.annotations.boxes.push(box);
-    state.interaction = {kind: "draw", point, box};
+    state.interaction = {kind: "draw", point, box, replaced: existing, originalLabelOrigin, wasDirty};
     markDirty();
   }
   $("#overlay").setPointerCapture(event.pointerId);
@@ -292,8 +301,28 @@ function finishInteraction() {
   updateFrame();
 }
 
+function cancelInteraction() {
+  if (!state.interaction) return;
+  const action = state.interaction;
+  if (action.kind === "draw") {
+    state.annotations.boxes = state.annotations.boxes.filter(item => item !== action.box);
+    if (action.replaced) state.annotations.boxes.push(action.replaced);
+    const track = state.annotations.tracks.find(item => item.id === action.box.track_id);
+    if (track) {
+      if (action.originalLabelOrigin) track.label_origin = action.originalLabelOrigin;
+      else delete track.label_origin;
+    }
+  } else {
+    action.box.bbox_xyxy = [...action.original];
+  }
+  state.interaction = null;
+  markDirty(action.wasDirty);
+  renderTracks();
+  updateFrame();
+}
+
 $("#overlay").addEventListener("pointerup", finishInteraction);
-$("#overlay").addEventListener("pointercancel", finishInteraction);
+$("#overlay").addEventListener("pointercancel", cancelInteraction);
 
 $("#new-project").addEventListener("click", () => $("#project-dialog").showModal());
 $("#empty-new-project").addEventListener("click", () => $("#project-dialog").showModal());
@@ -505,6 +534,7 @@ async function refreshJobs() {
 
 async function importProposals(jobId) {
   try {
+    if (state.dirty) await save();
     const proposals = await api(`/api/projects/${state.project.id}/jobs/${jobId}/proposals`);
     state.project.video.frame_count = proposals.frame_count;
     const summary = proposals.summary;
