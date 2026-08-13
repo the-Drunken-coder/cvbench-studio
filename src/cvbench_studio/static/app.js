@@ -221,6 +221,7 @@ $("#overlay").addEventListener("pointerdown", event => {
   const point = canvasPoint(event);
   const hit = hitBox(point);
   if (hit) {
+    const previousSelectedTrack = state.selectedTrack;
     state.selectedTrack = hit.track_id;
     const [x1, y1, x2, y2] = hit.bbox_xyxy;
     const resize = Math.abs(point[0] - x2) < 18 && Math.abs(point[1] - y2) < 18;
@@ -229,6 +230,7 @@ $("#overlay").addEventListener("pointerdown", event => {
       point,
       box: hit,
       original: [...hit.bbox_xyxy],
+      previousSelectedTrack,
       wasDirty: state.dirty,
     };
     renderTracks();
@@ -325,6 +327,7 @@ function cancelInteraction() {
     }
   } else {
     action.box.bbox_xyxy = [...action.original];
+    state.selectedTrack = action.previousSelectedTrack;
   }
   state.interaction = null;
   markDirty(action.wasDirty);
