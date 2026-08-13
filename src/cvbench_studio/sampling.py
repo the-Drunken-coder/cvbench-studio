@@ -6,6 +6,8 @@ from collections.abc import Iterator
 
 def stride_aligned_size(value: str, stride: int = 32) -> int:
     """Parse a positive model input size aligned to the model's largest stride."""
+    if isinstance(stride, bool) or not isinstance(stride, int) or stride <= 0:
+        raise ValueError("stride must be a positive integer")
     size = int(value)
     if size <= 0 or size % stride:
         raise ValueError(f"input size must be a positive multiple of {stride}")

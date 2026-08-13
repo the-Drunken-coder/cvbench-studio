@@ -16,6 +16,7 @@ from cvbench_studio.core import (
     load_project,
     save_annotations,
     save_source_metadata,
+    video_path,
 )
 from cvbench_studio.models import ModelQueue
 
@@ -48,7 +49,7 @@ class ModelQueueTests(unittest.TestCase):
                 "track_id": "person-1",
                 "class_id": "person",
                 "bbox_xyxy": [1, 1, 5, 8],
-                "confidence": 0.75,
+                "confidence": 0.123456789,
                 "model": {
                     "name": "fixture",
                     "version": "1",
@@ -69,7 +70,7 @@ class ModelQueueTests(unittest.TestCase):
             self.assertEqual(json.loads(queue.output_path(project["id"], job["id"]).read_text())["frame"], 0)
             imported = queue.proposals(project["id"], job["id"])
             self.assertEqual(imported["summary"]["boxes"], 1)
-            self.assertEqual(imported["boxes"][0]["confidence"], 0.75)
+            self.assertEqual(imported["boxes"][0]["confidence"], 0.123456789)
             self.assertEqual(imported["tracks"][0]["label_origin"]["kind"], "model_generated")
             save_annotations(
                 data,
@@ -101,7 +102,7 @@ class ModelQueueTests(unittest.TestCase):
                 tracks_path = f"clips/{project['id']}/tracks.jsonl"
                 row = json.loads(archive.read(tracks_path))
                 self.assertEqual(row["label_origin"]["model_run_ids"], [job["id"]])
-                self.assertEqual(row["confidence"], 0.75)
+                self.assertEqual(row["confidence"], 0.123456789)
 
     def test_empty_adapter_output_retains_model_provenance(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -207,6 +208,26 @@ class ModelQueueTests(unittest.TestCase):
             job = self._wait(queue, project["id"], submitted["id"])
             self.assertEqual(job["status"], "completed", job)
             self.assertEqual(queue.input_path(project["id"], submitted["id"]).read_bytes(), b"first")
+
+    def test_job_fails_if_adapter_mutates_its_input_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Mutating adapter")
+            video = data / "clip.mp4"
+            video.write_bytes(b"original")
+            import_video(data, project["id"], video, "clip.mp4", width=10, height=10, duration=1, fps=1)
+            script = (
+                "import pathlib,sys; video=pathlib.Path(sys.argv[1]); video.chmod(0o644); "
+                "video.write_bytes(b'mutated'); pathlib.Path(sys.argv[2]).write_text('{}\\n')"
+            )
+            queue = ModelQueue(data)
+            submitted = queue.submit(
+                project["id"], [sys.executable, "-c", script, "{video}", "{output}"]
+            )
+            job = self._wait(queue, project["id"], submitted["id"])
+            self.assertEqual(job["status"], "failed")
+            self.assertIn("changed during adapter execution", job["error"])
+            self.assertEqual(video_path(data, project["id"]).read_bytes(), b"original")
 
     def test_tail_proposal_extends_underreported_project_frame_count(self):
         with tempfile.TemporaryDirectory() as temporary:

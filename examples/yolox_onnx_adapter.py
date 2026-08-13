@@ -151,6 +151,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    output_path = args.output.resolve()
+    for label, input_path in (("--video", args.video), ("--model", args.model)):
+        if output_path == input_path.resolve() or (
+            args.output.exists() and input_path.exists() and args.output.samefile(input_path)
+        ):
+            raise ValueError(f"--output must not identify {label}")
     class_map = parse_class_map(args.classes or ["0=person", "16=dog"])
     config = {
         "class_map": class_map,
@@ -194,7 +200,7 @@ def main() -> int:
                             "track_id": f"detection-{frame_index:06d}-{index:03d}",
                             "class_id": detection.class_id,
                             "bbox_xyxy": [round(value, 3) for value in detection.box],
-                            "confidence": round(detection.confidence, 6),
+                            "confidence": detection.confidence,
                             "model": model,
                         }
                         output.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")

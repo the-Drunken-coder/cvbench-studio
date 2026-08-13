@@ -174,7 +174,7 @@ class ModelQueue:
                 "bbox_xyxy": [round(float(value), 3) for value in row["bbox_xyxy"]],
             }
             if row.get("confidence") is not None:
-                imported_box["confidence"] = round(float(row["confidence"]), 6)
+                imported_box["confidence"] = float(row["confidence"])
             boxes.append(imported_box)
         if frame_count > video["frame_count"]:
             with self._lock:
@@ -255,6 +255,12 @@ class ModelQueue:
                 timeout=24 * 60 * 60,
                 check=False,
             )
+            post_run_digest = hashlib.sha256()
+            with input_path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    post_run_digest.update(chunk)
+            if post_run_digest.hexdigest() != job["video_sha256"]:
+                raise StudioError("queued model input changed during adapter execution")
             job["returncode"] = completed.returncode
             job["stdout"] = completed.stdout[-20_000:]
             job["stderr"] = completed.stderr[-20_000:]

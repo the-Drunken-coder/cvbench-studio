@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
 import shutil
 import tempfile
@@ -157,23 +156,40 @@ def import_video(
         shutil.copyfile(source, temporary)
         digest = _sha256_file(temporary)
         with PROJECT_WRITE_LOCK:
-            for old in destination_dir.iterdir():
-                if old.is_file() and old != temporary:
-                    old.unlink()
-            temporary.replace(destination)
             project = load_project(data_dir, project_id)
-            project["video"] = {
-                "filename": safe_name,
-                "width": width,
-                "height": height,
-                "duration_seconds": duration,
-                "fps": fps,
-                "frame_count": max(1, round(duration * fps)),
-                "sha256": digest,
-                "size_bytes": destination.stat().st_size,
-            }
-            project["updated_at"] = _now()
-            _write_json(project_dir(data_dir, project_id) / "project.json", project)
+            previous_video = project.get("video")
+            backup = None
+            if destination.exists():
+                backup = destination_dir / f".{safe_name}.{uuid.uuid4().hex}.backup"
+                destination.replace(backup)
+            try:
+                temporary.replace(destination)
+                project["video"] = {
+                    "filename": safe_name,
+                    "width": width,
+                    "height": height,
+                    "duration_seconds": duration,
+                    "fps": fps,
+                    "frame_count": max(1, round(duration * fps)),
+                    "sha256": digest,
+                    "size_bytes": destination.stat().st_size,
+                }
+                project["updated_at"] = _now()
+                _write_json(project_dir(data_dir, project_id) / "project.json", project)
+            except Exception:
+                destination.unlink(missing_ok=True)
+                if backup is not None:
+                    backup.replace(destination)
+                raise
+            stale_paths = [backup] if backup is not None else []
+            if previous_video and previous_video["filename"] != safe_name:
+                stale_paths.append(destination_dir / previous_video["filename"])
+            for old in stale_paths:
+                try:
+                    old.unlink(missing_ok=True)
+                except OSError:
+                    # Metadata already points to the new video; a stale file is safer than false failure.
+                    pass
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
@@ -205,7 +221,7 @@ def extend_video_frame_count(
 
 
 def snapshot_video(data_dir: Path, project_id: str, destination: Path) -> dict[str, Any]:
-    """Bind a model job to the exact imported video inode and hash."""
+    """Copy the exact imported video into an isolated model-job input."""
     with PROJECT_WRITE_LOCK:
         project = load_project(data_dir, project_id)
         video = project.get("video")
@@ -214,12 +230,13 @@ def snapshot_video(data_dir: Path, project_id: str, destination: Path) -> dict[s
         source = video_path(data_dir, project_id)
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.link(source, destination)
-        except OSError:
             shutil.copyfile(source, destination)
-        if _sha256_file(destination) != video["sha256"]:
+            if _sha256_file(destination) != video["sha256"]:
+                raise StudioError("project video changed while queuing model job")
+            destination.chmod(0o444)
+        except Exception:
             destination.unlink(missing_ok=True)
-            raise StudioError("project video changed while queuing model job")
+            raise
         return video
 
 
@@ -359,7 +376,7 @@ def canonical_rows(project: dict[str, Any], annotations: dict[str, Any]) -> list
             "label_origin": origin,
         }
         if "confidence" in box:
-            row["confidence"] = round(float(box["confidence"]), 6)
+            row["confidence"] = float(box["confidence"])
         rows.append(row)
     return rows
 

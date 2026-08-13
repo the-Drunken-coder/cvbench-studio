@@ -6,6 +6,7 @@ import unittest
 import zipfile
 from itertools import islice
 from pathlib import Path
+from unittest.mock import patch
 
 from cvbench_studio.core import (
     StudioError,
@@ -18,6 +19,7 @@ from cvbench_studio.core import (
     load_project,
     save_annotations,
     save_source_metadata,
+    snapshot_video,
     validate_annotations,
     video_path,
 )
@@ -50,6 +52,9 @@ class CoreTests(unittest.TestCase):
         for invalid in ("0", "-32", "641"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 stride_aligned_size(invalid)
+        for invalid_stride in (0, -32, False):
+            with self.subTest(invalid_stride=invalid_stride), self.assertRaises(ValueError):
+                stride_aligned_size("640", invalid_stride)
 
     def test_adapter_thresholds_require_finite_probabilities(self):
         self.assertEqual(probability("0"), 0.0)
@@ -120,6 +125,33 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(video_path(self.data, self.project["id"]).read_bytes(), b"fake-video-two")
         self.assertEqual(updated["video"]["frame_count"], 72)
         self.assertEqual([path.name for path in video_path(self.data, self.project["id"]).parent.iterdir()], ["replacement.mov"])
+
+    def test_failed_same_name_import_preserves_previous_video(self):
+        replacement = self.data / "replacement.mp4"
+        replacement.write_bytes(b"replacement")
+        with (
+            patch("cvbench_studio.core._write_json", side_effect=OSError("disk full")),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            import_video(
+                self.data,
+                self.project["id"],
+                replacement,
+                "match.mp4",
+                width=1280,
+                height=720,
+                duration=3,
+                fps=24,
+            )
+        self.assertEqual(load_project(self.data, self.project["id"])["video"], self.project["video"])
+        self.assertEqual(video_path(self.data, self.project["id"]).read_bytes(), b"fake-video-one")
+
+    def test_model_snapshot_does_not_alias_project_video(self):
+        snapshot = self.data / "snapshot.mp4"
+        snapshot_video(self.data, self.project["id"], snapshot)
+        snapshot.chmod(0o644)
+        snapshot.write_bytes(b"mutated")
+        self.assertEqual(video_path(self.data, self.project["id"]).read_bytes(), b"fake-video-one")
 
     def test_frame_count_extension_requires_the_expected_source_video(self):
         with self.assertRaisesRegex(StudioError, "different source video"):
