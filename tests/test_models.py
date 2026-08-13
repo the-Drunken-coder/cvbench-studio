@@ -4,11 +4,12 @@ import hashlib
 import json
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from cvbench_studio.core import (
     StudioError,
@@ -139,6 +140,28 @@ class ModelQueueTests(unittest.TestCase):
                 with self.assertRaisesRegex(StudioError, "invalid provenance hash"):
                     ModelQueue._validate_model(candidate, 1)
 
+    def test_model_revision_and_license_provenance_require_strings(self):
+        model = {
+            "name": "fixture",
+            "version": "1",
+            "weights_uri": "synthetic://weights",
+            "weights_sha256": "0" * 64,
+            "code_revision": "1234567",
+            "config_sha256": "1" * 64,
+            "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
+        }
+        with self.assertRaisesRegex(StudioError, "invalid code revision"):
+            ModelQueue._validate_model({**model, "code_revision": 1234567}, 1)
+        for license_value in (
+            {"spdx": None, "url": "https://example.invalid"},
+            {"spdx": "MIT", "url": None},
+        ):
+            with (
+                self.subTest(license=license_value),
+                self.assertRaisesRegex(StudioError, "invalid model license provenance"),
+            ):
+                ModelQueue._validate_model({**model, "license": license_value}, 1)
+
     def test_windows_model_snapshot_remains_writable_for_cleanup(self):
         snapshot = Path("snapshot.mp4")
         with (
@@ -147,6 +170,20 @@ class ModelQueueTests(unittest.TestCase):
         ):
             _protect_model_snapshot(snapshot)
         chmod.assert_not_called()
+
+    def test_windows_stop_closes_the_process_tree_job(self):
+        queue = object.__new__(ModelQueue)
+        queue._process_lock = threading.Lock()
+        queue._active_process = Mock()
+        queue._active_windows_job = 123
+        with (
+            patch("cvbench_studio.models.os.name", "nt"),
+            patch("cvbench_studio.models._close_windows_job") as close_job,
+        ):
+            queue._stop_active_process(kill=False)
+        close_job.assert_called_once_with(123)
+        self.assertIsNone(queue._active_windows_job)
+        queue._active_process.terminate.assert_not_called()
 
     def test_close_terminates_running_adapter_and_persists_interruption(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -25,6 +25,90 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _assign_windows_job(process: subprocess.Popen[str]) -> int:
+    """Attach a process tree to a kill-on-close Windows Job Object."""
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("per_process_user_time_limit", ctypes.c_longlong),
+            ("per_job_user_time_limit", ctypes.c_longlong),
+            ("limit_flags", wintypes.DWORD),
+            ("minimum_working_set_size", ctypes.c_size_t),
+            ("maximum_working_set_size", ctypes.c_size_t),
+            ("active_process_limit", wintypes.DWORD),
+            ("affinity", ctypes.c_size_t),
+            ("priority_class", wintypes.DWORD),
+            ("scheduling_class", wintypes.DWORD),
+        ]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("read_operation_count", ctypes.c_ulonglong),
+            ("write_operation_count", ctypes.c_ulonglong),
+            ("other_operation_count", ctypes.c_ulonglong),
+            ("read_transfer_count", ctypes.c_ulonglong),
+            ("write_transfer_count", ctypes.c_ulonglong),
+            ("other_transfer_count", ctypes.c_ulonglong),
+        ]
+
+    class ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("basic_limit_information", BasicLimitInformation),
+            ("io_info", IoCounters),
+            ("process_memory_limit", ctypes.c_size_t),
+            ("job_memory_limit", ctypes.c_size_t),
+            ("peak_process_memory_used", ctypes.c_size_t),
+            ("peak_job_memory_used", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.CreateJobObjectW(None, None)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    information = ExtendedLimitInformation()
+    information.basic_limit_information.limit_flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(
+        handle,
+        9,  # JobObjectExtendedLimitInformation
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    ) or not kernel32.AssignProcessToJobObject(
+        handle,
+        wintypes.HANDLE(process._handle),
+    ):
+        error = ctypes.get_last_error()
+        kernel32.CloseHandle(handle)
+        raise ctypes.WinError(error)
+    return int(handle)
+
+
+def _close_windows_job(handle: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    if not kernel32.CloseHandle(wintypes.HANDLE(handle)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 class ModelQueue:
     """Runs explicit external commands without a shell.
 
@@ -58,6 +142,7 @@ class ModelQueue:
         self._closing = threading.Event()
         self._process_lock = threading.Lock()
         self._active_process: subprocess.Popen[str] | None = None
+        self._active_windows_job: int | None = None
         self._fail_interrupted_jobs()
         self._worker = threading.Thread(target=self._run, daemon=True, name="cvbench-model-queue")
         self._worker.start()
@@ -119,8 +204,13 @@ class ModelQueue:
             process = self._active_process
             if process is None:
                 return
+            windows_job = self._active_windows_job
+            if windows_job is not None:
+                self._active_windows_job = None
             try:
-                if os.name == "posix":
+                if windows_job is not None:
+                    _close_windows_job(windows_job)
+                elif os.name == "posix":
                     os.killpg(process.pid, signal.SIGKILL if kill else signal.SIGTERM)
                 elif process.poll() is None:
                     process.kill() if kill else process.terminate()
@@ -372,21 +462,46 @@ class ModelQueue:
                 text=True,
                 start_new_session=os.name == "posix",
             )
+            try:
+                windows_job = _assign_windows_job(process) if os.name == "nt" else None
+            except OSError as exc:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if process.poll() is None:
+                    process.kill()
+                if process.stdout is not None:
+                    process.stdout.close()
+                if process.stderr is not None:
+                    process.stderr.close()
+                raise StudioError("could not establish Windows process-tree supervision") from exc
             with self._process_lock:
                 self._active_process = process
+                self._active_windows_job = windows_job
                 closing = self._closing.is_set()
             if closing:
-                process.terminate()
+                self._stop_active_process(kill=False)
             try:
                 stdout, stderr = process.communicate(timeout=24 * 60 * 60)
             except subprocess.TimeoutExpired as exc:
-                process.kill()
+                self._stop_active_process(kill=True)
                 process.communicate()
                 raise StudioError("adapter timed out after 24 hours") from exc
             finally:
+                remaining_windows_job = None
                 with self._process_lock:
                     if self._active_process is process:
                         self._active_process = None
+                        remaining_windows_job = self._active_windows_job
+                        self._active_windows_job = None
+                if remaining_windows_job is not None:
+                    try:
+                        _close_windows_job(remaining_windows_job)
+                    except OSError:
+                        pass
             if self._closing.is_set():
                 raise StudioError("Studio closed before the adapter completed")
             post_run_digest = hashlib.sha256()
@@ -477,12 +592,17 @@ class ModelQueue:
             for key in ("weights_sha256", "config_sha256")
         ):
             raise StudioError(f"adapter output line {line_number} has an invalid provenance hash")
-        if len(str(model["code_revision"])) < 7:
+        code_revision = model["code_revision"]
+        if not isinstance(code_revision, str) or len(code_revision.strip()) < 7:
             raise StudioError(f"adapter output line {line_number} has an invalid code revision")
         license_value = model["license"]
+        spdx = license_value.get("spdx") if isinstance(license_value, dict) else None
+        license_url = license_value.get("url") if isinstance(license_value, dict) else None
         if (
             not isinstance(license_value, dict)
-            or not re.fullmatch(r"[A-Za-z0-9.+-]{2,80}", str(license_value.get("spdx", "")))
-            or not str(license_value.get("url", "")).strip()
+            or not isinstance(spdx, str)
+            or not re.fullmatch(r"[A-Za-z0-9.+-]{2,80}", spdx)
+            or not isinstance(license_url, str)
+            or not license_url.strip()
         ):
             raise StudioError(f"adapter output line {line_number} has invalid model license provenance")
