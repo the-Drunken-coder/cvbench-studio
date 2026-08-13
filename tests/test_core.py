@@ -11,6 +11,7 @@ from cvbench_studio.core import (
     StudioError,
     create_project,
     export_project,
+    extend_video_frame_count,
     import_video,
     list_projects,
     load_annotations,
@@ -119,6 +120,16 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(video_path(self.data, self.project["id"]).read_bytes(), b"fake-video-two")
         self.assertEqual(updated["video"]["frame_count"], 72)
         self.assertEqual([path.name for path in video_path(self.data, self.project["id"]).parent.iterdir()], ["replacement.mov"])
+
+    def test_frame_count_extension_requires_the_expected_source_video(self):
+        with self.assertRaisesRegex(StudioError, "different source video"):
+            extend_video_frame_count(
+                self.data,
+                self.project["id"],
+                100,
+                expected_video_sha256="0" * 64,
+            )
+        self.assertEqual(load_project(self.data, self.project["id"])["video"]["frame_count"], 60)
 
     def test_validation_rejects_duplicate_and_out_of_bounds_boxes(self):
         annotations = self.annotations()

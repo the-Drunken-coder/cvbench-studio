@@ -172,7 +172,12 @@ class ModelQueue:
             boxes.append(imported_box)
         if frame_count > video["frame_count"]:
             with self._lock:
-                project = extend_video_frame_count(self.data_dir, project_id, frame_count)
+                project = extend_video_frame_count(
+                    self.data_dir,
+                    project_id,
+                    frame_count,
+                    expected_video_sha256=job["video_sha256"],
+                )
             video = project["video"]
         return {
             "job_id": job_id,

@@ -6,6 +6,7 @@ import math
 import re
 import shutil
 import tempfile
+import threading
 import uuid
 import zipfile
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ from typing import Any
 PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 SCHEMA = "cvbench.studio-annotations/v1"
 DEFAULT_CLASSES = ["person", "vehicle", "dog", "sports_ball"]
+PROJECT_WRITE_LOCK = threading.RLock()
 
 
 class StudioError(ValueError):
@@ -152,42 +154,52 @@ def import_video(
     try:
         shutil.copyfile(source, temporary)
         digest = _sha256_file(temporary)
-        for old in destination_dir.iterdir():
-            if old.is_file() and old != temporary:
-                old.unlink()
-        temporary.replace(destination)
+        with PROJECT_WRITE_LOCK:
+            for old in destination_dir.iterdir():
+                if old.is_file() and old != temporary:
+                    old.unlink()
+            temporary.replace(destination)
+            project = load_project(data_dir, project_id)
+            project["video"] = {
+                "filename": safe_name,
+                "width": width,
+                "height": height,
+                "duration_seconds": duration,
+                "fps": fps,
+                "frame_count": max(1, round(duration * fps)),
+                "sha256": digest,
+                "size_bytes": destination.stat().st_size,
+            }
+            project["updated_at"] = _now()
+            _write_json(project_dir(data_dir, project_id) / "project.json", project)
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
-    project = load_project(data_dir, project_id)
-    project["video"] = {
-        "filename": safe_name,
-        "width": width,
-        "height": height,
-        "duration_seconds": duration,
-        "fps": fps,
-        "frame_count": max(1, round(duration * fps)),
-        "sha256": digest,
-        "size_bytes": destination.stat().st_size,
-    }
-    project["updated_at"] = _now()
-    _write_json(project_dir(data_dir, project_id) / "project.json", project)
     return project
 
 
-def extend_video_frame_count(data_dir: Path, project_id: str, frame_count: int) -> dict[str, Any]:
+def extend_video_frame_count(
+    data_dir: Path,
+    project_id: str,
+    frame_count: int,
+    *,
+    expected_video_sha256: str,
+) -> dict[str, Any]:
     """Persist a larger decoder-observed frame count without shortening the video."""
     if isinstance(frame_count, bool) or not isinstance(frame_count, int) or frame_count <= 0:
         raise StudioError("frame count must be a positive integer")
-    project = load_project(data_dir, project_id)
-    video = project.get("video")
-    if not video:
-        raise StudioError("project has no video")
-    if frame_count > video["frame_count"]:
-        video["frame_count"] = frame_count
-        project["updated_at"] = _now()
-        _write_json(project_dir(data_dir, project_id) / "project.json", project)
-    return project
+    with PROJECT_WRITE_LOCK:
+        project = load_project(data_dir, project_id)
+        video = project.get("video")
+        if not video:
+            raise StudioError("project has no video")
+        if video["sha256"] != expected_video_sha256:
+            raise StudioError("model job belongs to a different source video")
+        if frame_count > video["frame_count"]:
+            video["frame_count"] = frame_count
+            project["updated_at"] = _now()
+            _write_json(project_dir(data_dir, project_id) / "project.json", project)
+        return project
 
 
 def video_path(data_dir: Path, project_id: str) -> Path:

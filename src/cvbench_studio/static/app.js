@@ -243,7 +243,6 @@ $("#overlay").addEventListener("pointermove", event => {
   if (!state.interaction) return;
   const point = canvasPoint(event);
   const action = state.interaction;
-  const previous = [...action.box.bbox_xyxy];
   if (action.kind === "draw") {
     action.box.bbox_xyxy = [
       Math.min(action.point[0], point[0]), Math.min(action.point[1], point[1]),
@@ -268,17 +267,21 @@ $("#overlay").addEventListener("pointermove", event => {
     action.box.bbox_xyxy[3] = point[1];
     clampBox(action.box.bbox_xyxy);
   }
-  if (action.box.bbox_xyxy.some((value, index) => value !== previous[index])) {
-    if (action.kind !== "draw") markBoxModelAssisted(action.box);
-    markDirty();
-  }
   renderOverlay();
 });
 
 $("#overlay").addEventListener("pointerup", () => {
   if (!state.interaction) return;
-  const box = state.interaction.box;
+  const action = state.interaction;
+  const box = action.box;
   box.bbox_xyxy = box.bbox_xyxy.map(value => Math.round(value * 1000) / 1000);
+  if (
+    action.kind !== "draw"
+    && box.bbox_xyxy.some((value, index) => value !== action.original[index])
+  ) {
+    markBoxModelAssisted(box);
+    markDirty();
+  }
   const [x1, y1, x2, y2] = box.bbox_xyxy;
   if (x2 - x1 < 3 || y2 - y1 < 3) state.annotations.boxes = state.annotations.boxes.filter(item => item !== box);
   state.interaction = null;
