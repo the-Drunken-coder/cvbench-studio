@@ -121,6 +121,22 @@ class ModelQueueTests(unittest.TestCase):
                 with self.assertRaisesRegex(StudioError, "invalid model identity provenance"):
                     ModelQueue._validate_model(candidate, 1)
 
+    def test_model_hash_provenance_requires_strings(self):
+        model = {
+            "name": "fixture",
+            "version": "1",
+            "weights_uri": "synthetic://weights",
+            "weights_sha256": "0" * 64,
+            "code_revision": "1234567",
+            "config_sha256": "1" * 64,
+            "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
+        }
+        for key in ("weights_sha256", "config_sha256"):
+            with self.subTest(key=key):
+                candidate = {**model, key: int(model[key])}
+                with self.assertRaisesRegex(StudioError, "invalid provenance hash"):
+                    ModelQueue._validate_model(candidate, 1)
+
     def test_close_terminates_running_adapter_and_persists_interruption(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)

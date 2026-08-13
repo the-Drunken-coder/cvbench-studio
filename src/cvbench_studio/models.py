@@ -471,7 +471,10 @@ class ModelQueue:
             for key in ("name", "version", "weights_uri")
         ):
             raise StudioError(f"adapter output line {line_number} has invalid model identity provenance")
-        if not SHA256.fullmatch(str(model["weights_sha256"])) or not SHA256.fullmatch(str(model["config_sha256"])):
+        if any(
+            not isinstance(model[key], str) or not SHA256.fullmatch(model[key])
+            for key in ("weights_sha256", "config_sha256")
+        ):
             raise StudioError(f"adapter output line {line_number} has an invalid provenance hash")
         if len(str(model["code_revision"])) < 7:
             raise StudioError(f"adapter output line {line_number} has an invalid code revision")
