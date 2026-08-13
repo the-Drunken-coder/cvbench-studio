@@ -22,7 +22,7 @@ from cvbench_studio.core import (
     save_source_metadata,
     video_path,
 )
-from cvbench_studio.models import ModelQueue
+from cvbench_studio.models import WINDOWS_CREATE_SUSPENDED, ModelQueue, _start_adapter_process
 
 
 class ModelQueueTests(unittest.TestCase):
@@ -184,6 +184,31 @@ class ModelQueueTests(unittest.TestCase):
         close_job.assert_called_once_with(123)
         self.assertIsNone(queue._active_windows_job)
         queue._active_process.terminate.assert_not_called()
+
+    def test_windows_adapter_is_supervised_before_it_resumes(self):
+        process = Mock(pid=123, stdout=None, stderr=None)
+        events = []
+        with (
+            patch("cvbench_studio.models.os.name", "nt"),
+            patch("cvbench_studio.models.subprocess.Popen", return_value=process) as popen,
+            patch(
+                "cvbench_studio.models._assign_windows_job",
+                side_effect=lambda candidate: events.append(("assign", candidate)) or 456,
+            ),
+            patch(
+                "cvbench_studio.models._resume_windows_process",
+                side_effect=lambda candidate: events.append(("resume", candidate)),
+            ),
+        ):
+            started, windows_job = _start_adapter_process(
+                ["adapter"],
+                cwd=Path("project"),
+                environment={"CVD": "1"},
+            )
+        self.assertIs(started, process)
+        self.assertEqual(windows_job, 456)
+        self.assertEqual(events, [("assign", process), ("resume", process)])
+        self.assertEqual(popen.call_args.kwargs["creationflags"], WINDOWS_CREATE_SUSPENDED)
 
     def test_close_terminates_running_adapter_and_persists_interruption(self):
         with tempfile.TemporaryDirectory() as temporary:

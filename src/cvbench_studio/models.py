@@ -19,6 +19,7 @@ from .core import StudioError, extend_video_frame_count, load_project, project_d
 
 TRACK_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+WINDOWS_CREATE_SUSPENDED = 0x00000004
 
 
 def _now() -> str:
@@ -107,6 +108,106 @@ def _close_windows_job(handle: int) -> None:
     kernel32.CloseHandle.restype = wintypes.BOOL
     if not kernel32.CloseHandle(wintypes.HANDLE(handle)):
         raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _resume_windows_process(process: subprocess.Popen[str]) -> None:
+    """Resume the primary thread of a process created with CREATE_SUSPENDED."""
+    import ctypes
+    from ctypes import wintypes
+
+    class ThreadEntry32(ctypes.Structure):
+        _fields_ = [
+            ("size", wintypes.DWORD),
+            ("usage_count", wintypes.DWORD),
+            ("thread_id", wintypes.DWORD),
+            ("owner_process_id", wintypes.DWORD),
+            ("base_priority", wintypes.LONG),
+            ("priority_delta", wintypes.LONG),
+            ("flags", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Thread32First.argtypes = (wintypes.HANDLE, ctypes.POINTER(ThreadEntry32))
+    kernel32.Thread32First.restype = wintypes.BOOL
+    kernel32.Thread32Next.argtypes = (wintypes.HANDLE, ctypes.POINTER(ThreadEntry32))
+    kernel32.Thread32Next.restype = wintypes.BOOL
+    kernel32.OpenThread.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.ResumeThread.argtypes = (wintypes.HANDLE,)
+    kernel32.ResumeThread.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000004, 0)  # TH32CS_SNAPTHREAD
+    if snapshot == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    entry = ThreadEntry32()
+    entry.size = ctypes.sizeof(entry)
+    try:
+        has_entry = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+        while has_entry:
+            if entry.owner_process_id == process.pid:
+                thread = kernel32.OpenThread(0x0002, False, entry.thread_id)  # THREAD_SUSPEND_RESUME
+                if not thread:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                try:
+                    if kernel32.ResumeThread(thread) == 0xFFFFFFFF:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                finally:
+                    kernel32.CloseHandle(thread)
+                return
+            has_entry = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    raise OSError("could not find the suspended adapter thread")
+
+
+def _start_adapter_process(
+    expanded: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+) -> tuple[subprocess.Popen[str], int | None]:
+    """Start an adapter under process-tree supervision before it can execute."""
+    process: subprocess.Popen[str] = subprocess.Popen(
+        expanded,
+        cwd=cwd,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=os.name == "posix",
+        creationflags=WINDOWS_CREATE_SUSPENDED if os.name == "nt" else 0,
+    )
+    if os.name != "nt":
+        return process, None
+    windows_job = None
+    try:
+        windows_job = _assign_windows_job(process)
+        _resume_windows_process(process)
+        return process, windows_job
+    except OSError as exc:
+        if windows_job is not None:
+            try:
+                _close_windows_job(windows_job)
+            except OSError:
+                pass
+        else:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        if process.poll() is None:
+            process.kill()
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+        raise StudioError("could not establish Windows process-tree supervision") from exc
 
 
 class ModelQueue:
@@ -453,31 +554,11 @@ class ModelQueue:
                 CVBENCH_STUDIO_VIDEO=replacements["{video}"],
                 CVBENCH_STUDIO_OUTPUT=replacements["{output}"],
             )
-            process: subprocess.Popen[str] = subprocess.Popen(
+            process, windows_job = _start_adapter_process(
                 expanded,
                 cwd=project_dir(self.data_dir, project_id),
-                env=environment,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=os.name == "posix",
+                environment=environment,
             )
-            try:
-                windows_job = _assign_windows_job(process) if os.name == "nt" else None
-            except OSError as exc:
-                subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                if process.poll() is None:
-                    process.kill()
-                if process.stdout is not None:
-                    process.stdout.close()
-                if process.stderr is not None:
-                    process.stderr.close()
-                raise StudioError("could not establish Windows process-tree supervision") from exc
             with self._process_lock:
                 self._active_process = process
                 self._active_windows_job = windows_job
