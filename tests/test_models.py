@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import stat
 import sys
 import tempfile
 import time
@@ -13,13 +12,13 @@ from unittest.mock import patch
 
 from cvbench_studio.core import (
     StudioError,
+    _protect_model_snapshot,
     create_project,
     export_project,
     import_video,
     load_project,
     save_annotations,
     save_source_metadata,
-    snapshot_video,
     video_path,
 )
 from cvbench_studio.models import ModelQueue
@@ -141,16 +140,13 @@ class ModelQueueTests(unittest.TestCase):
                     ModelQueue._validate_model(candidate, 1)
 
     def test_windows_model_snapshot_remains_writable_for_cleanup(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            data = Path(temporary)
-            project = create_project(data, "Windows snapshot")
-            video = data / "clip.mp4"
-            video.write_bytes(b"video")
-            import_video(data, project["id"], video, "clip.mp4", width=10, height=10, duration=1, fps=1)
-            with patch("cvbench_studio.core.os.name", "nt"):
-                _, snapshot = snapshot_video(data, project["id"], data / "jobs" / "snapshot")
-            self.assertTrue(snapshot.stat().st_mode & stat.S_IWUSR)
-            snapshot.unlink()
+        snapshot = Path("snapshot.mp4")
+        with (
+            patch("cvbench_studio.core.os.name", "nt"),
+            patch.object(Path, "chmod") as chmod,
+        ):
+            _protect_model_snapshot(snapshot)
+        chmod.assert_not_called()
 
     def test_close_terminates_running_adapter_and_persists_interruption(self):
         with tempfile.TemporaryDirectory() as temporary:

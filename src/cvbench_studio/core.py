@@ -252,12 +252,17 @@ def snapshot_video(
             shutil.copyfile(source, destination)
             if _sha256_file(destination) != video["sha256"]:
                 raise StudioError("project video changed while queuing model job")
-            if os.name != "nt":
-                destination.chmod(0o444)
+            _protect_model_snapshot(destination)
         except Exception:
             destination.unlink(missing_ok=True)
             raise
         return video, destination
+
+
+def _protect_model_snapshot(path: Path) -> None:
+    """Make model input advisory-read-only where cleanup remains portable."""
+    if os.name != "nt":
+        path.chmod(0o444)
 
 
 def video_path(data_dir: Path, project_id: str) -> Path:
