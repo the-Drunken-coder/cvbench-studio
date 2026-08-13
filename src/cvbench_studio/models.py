@@ -12,7 +12,7 @@ import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from typing import Any
 
 from .core import StudioError, extend_video_frame_count, load_project, project_dir, snapshot_video
@@ -286,9 +286,11 @@ class ModelQueue:
         """Cancel queued work and release exclusive queue ownership promptly."""
         if self._ownership.closed:
             return
+        pending_error = None
         with self._lifecycle_lock:
             if not self._closing.is_set():
                 self._closing.set()
+                pending_error = self._cancel_pending_jobs()
                 self._queue.put(None)
         self._stop_active_process(kill=False)
         self._worker.join(timeout=2)
@@ -299,6 +301,36 @@ class ModelQueue:
             raise StudioError("model queue worker did not stop")
         if not self._ownership.closed:
             self._ownership.close()
+        if pending_error is not None:
+            raise StudioError("could not persist every cancelled model job") from pending_error
+
+    def _cancel_pending_jobs(self) -> Exception | None:
+        first_error = None
+        while True:
+            try:
+                queued = self._queue.get_nowait()
+            except Empty:
+                return first_error
+            try:
+                if queued is not None:
+                    project_id, job_id, _ = queued
+                    try:
+                        self._cancel_pending_job(project_id, job_id)
+                    except Exception as exc:  # noqa: BLE001 - shutdown must continue draining
+                        first_error = first_error or exc
+            finally:
+                self._queue.task_done()
+
+    def _cancel_pending_job(self, project_id: str, job_id: str) -> None:
+        job = self.get(project_id, job_id)
+        job["status"] = "failed"
+        job["finished_at"] = _now()
+        job["error"] = "Studio closed before the adapter started"
+        try:
+            self.input_path(project_id, job_id).unlink(missing_ok=True)
+        except OSError as exc:
+            job["error"] = f"could not remove model input snapshot: {exc}"
+        self._write(project_id, job)
 
     def _stop_active_process(self, *, kill: bool) -> None:
         with self._process_lock:

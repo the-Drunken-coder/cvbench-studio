@@ -35,8 +35,10 @@ class StudioServer(ThreadingHTTPServer):
         super().__init__(address, StudioHandler)
 
     def server_close(self) -> None:
-        self.model_queue.close()
-        super().server_close()
+        try:
+            self.model_queue.close()
+        finally:
+            super().server_close()
 
 
 class StudioHandler(BaseHTTPRequestHandler):

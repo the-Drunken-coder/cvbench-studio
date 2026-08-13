@@ -242,6 +242,32 @@ class ModelQueueTests(unittest.TestCase):
             replacement = ModelQueue(data)
             replacement.close()
 
+    def test_close_finalizes_pending_jobs_without_running_them(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Queued shutdown")
+            video = data / "clip.mp4"
+            video.write_bytes(b"video")
+            import_video(data, project["id"], video, "clip.mp4", width=10, height=10, duration=1, fps=1)
+            with patch("cvbench_studio.models.threading.Thread") as thread_class:
+                worker = thread_class.return_value
+                worker.is_alive.return_value = False
+                queue = ModelQueue(data)
+            submitted = [
+                queue.submit(project["id"], [sys.executable, "-c", "pass"])
+                for _ in range(3)
+            ]
+
+            queue.close()
+
+            for original in submitted:
+                job = queue.get(project["id"], original["id"])
+                self.assertEqual(job["status"], "failed")
+                self.assertIsNone(job["started_at"])
+                self.assertIn("before the adapter started", job["error"])
+                self.assertFalse(queue.input_path(project["id"], original["id"]).exists())
+            self.assertIsNone(queue._queue.get_nowait())
+
     def test_proposals_reject_output_changed_after_adapter_execution(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
