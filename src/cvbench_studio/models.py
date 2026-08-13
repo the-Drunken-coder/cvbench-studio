@@ -51,8 +51,12 @@ class ModelQueue:
         except (OSError, BlockingIOError) as exc:
             self._ownership.close()
             raise StudioError("another model queue is already using this data directory") from exc
-        self._queue: Queue[tuple[str, str, list[str]]] = Queue()
+        self._queue: Queue[tuple[str, str, list[str]] | None] = Queue()
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._closing = threading.Event()
+        self._process_lock = threading.Lock()
+        self._active_process: subprocess.Popen[str] | None = None
         self._fail_interrupted_jobs()
         self._worker = threading.Thread(target=self._run, daemon=True, name="cvbench-model-queue")
         self._worker.start()
@@ -78,25 +82,53 @@ class ModelQueue:
                         or project_root.name != project_id
                     ):
                         continue
-                    input_path = self.input_path(project_id, job_id)
                 except (KeyError, OSError, ValueError, json.JSONDecodeError):
                     continue
+                try:
+                    input_path = self.input_path(project_id, job_id)
+                except (OSError, StudioError):
+                    input_path = None
                 job["status"] = "failed"
                 job["finished_at"] = _now()
                 job["error"] = "Studio restarted before the adapter completed"
                 self._write(project_id, job)
-                input_path.unlink(missing_ok=True)
+                if input_path is not None:
+                    input_path.unlink(missing_ok=True)
 
     def close(self) -> None:
-        """Release exclusive queue ownership after submitted work is complete."""
-        self._queue.join()
+        """Cancel queued work and release exclusive queue ownership promptly."""
+        if self._ownership.closed:
+            return
+        with self._lifecycle_lock:
+            if not self._closing.is_set():
+                self._closing.set()
+                self._queue.put(None)
+        self._stop_active_process(kill=False)
+        self._worker.join(timeout=2)
+        if self._worker.is_alive():
+            self._stop_active_process(kill=True)
+            self._worker.join(timeout=2)
+        if self._worker.is_alive():
+            raise StudioError("model queue worker did not stop")
         if not self._ownership.closed:
             self._ownership.close()
+
+    def _stop_active_process(self, *, kill: bool) -> None:
+        with self._process_lock:
+            process = self._active_process
+            if process is None or process.poll() is not None:
+                return
+            try:
+                process.kill() if kill else process.terminate()
+            except OSError:
+                pass
 
     def submit(self, project_id: str, command: str | list[str]) -> dict[str, Any]:
         argv = shlex.split(command) if isinstance(command, str) else list(command)
         if not argv or not all(isinstance(part, str) and part for part in argv):
             raise StudioError("model command must contain an executable")
+        if self._closing.is_set():
+            raise StudioError("model queue is closed")
         job_id = uuid.uuid4().hex
         input_stem = self._input_stem(project_id, job_id)
         video, input_path = snapshot_video(self.data_dir, project_id, input_stem)
@@ -115,11 +147,14 @@ class ModelQueue:
             "error": None,
         }
         try:
-            self._write(project_id, job)
+            with self._lifecycle_lock:
+                if self._closing.is_set():
+                    raise StudioError("model queue is closed")
+                self._write(project_id, job)
+                self._queue.put((project_id, job_id, argv))
         except BaseException:
             input_path.unlink(missing_ok=True)
             raise
-        self._queue.put((project_id, job_id, argv))
         return job
 
     def list(self, project_id: str) -> list[dict[str, Any]]:
@@ -278,8 +313,11 @@ class ModelQueue:
 
     def _run(self) -> None:
         while True:
-            project_id, job_id, argv = self._queue.get()
+            queued = self._queue.get()
             try:
+                if queued is None:
+                    return
+                project_id, job_id, argv = queued
                 self._execute(project_id, job_id, argv)
             finally:
                 self._queue.task_done()
@@ -292,6 +330,8 @@ class ModelQueue:
         output = self.output_path(project_id, job_id)
         input_path = self.input_path(project_id, job_id)
         try:
+            if self._closing.is_set():
+                raise StudioError("Studio closed before the adapter completed")
             if not input_path.is_file():
                 raise StudioError("queued model input is missing")
             input_digest = hashlib.sha256()
@@ -312,27 +352,43 @@ class ModelQueue:
                 CVBENCH_STUDIO_VIDEO=replacements["{video}"],
                 CVBENCH_STUDIO_OUTPUT=replacements["{output}"],
             )
-            completed = subprocess.run(
+            process: subprocess.Popen[str] = subprocess.Popen(
                 expanded,
                 cwd=project_dir(self.data_dir, project_id),
                 env=environment,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=24 * 60 * 60,
-                check=False,
             )
+            with self._process_lock:
+                self._active_process = process
+                closing = self._closing.is_set()
+            if closing:
+                process.terminate()
+            try:
+                stdout, stderr = process.communicate(timeout=24 * 60 * 60)
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                process.communicate()
+                raise StudioError("adapter timed out after 24 hours") from exc
+            finally:
+                with self._process_lock:
+                    if self._active_process is process:
+                        self._active_process = None
+            if self._closing.is_set():
+                raise StudioError("Studio closed before the adapter completed")
             post_run_digest = hashlib.sha256()
             with input_path.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     post_run_digest.update(chunk)
             if post_run_digest.hexdigest() != job["video_sha256"]:
                 raise StudioError("queued model input changed during adapter execution")
-            job["returncode"] = completed.returncode
-            job["stdout"] = completed.stdout[-20_000:]
-            job["stderr"] = completed.stderr[-20_000:]
-            if completed.returncode:
+            job["returncode"] = process.returncode
+            job["stdout"] = stdout[-20_000:]
+            job["stderr"] = stderr[-20_000:]
+            if process.returncode:
                 job["status"] = "failed"
-                job["error"] = f"adapter exited with status {completed.returncode}"
+                job["error"] = f"adapter exited with status {process.returncode}"
             elif not output.is_file():
                 job["status"] = "failed"
                 job["error"] = "adapter did not create {output}"

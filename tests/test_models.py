@@ -62,6 +62,29 @@ class ModelQueueTests(unittest.TestCase):
             self.assertFalse(snapshot.exists())
             queue.close()
 
+    def test_startup_fails_legacy_interrupted_jobs_without_snapshot_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Legacy interrupted adapter")
+            jobs = data / "projects" / project["id"] / "jobs"
+            jobs.mkdir()
+            job_id = "c" * 32
+            job = {
+                "schema_version": "cvbench.model-job/v1",
+                "id": job_id,
+                "project_id": project["id"],
+                "status": "queued",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "finished_at": None,
+                "error": None,
+            }
+            (jobs / f"{job_id}.json").write_text(json.dumps(job))
+            queue = ModelQueue(data)
+            recovered = queue.get(project["id"], job_id)
+            self.assertEqual(recovered["status"], "failed")
+            self.assertIn("restarted", recovered["error"])
+            queue.close()
+
     def test_second_live_queue_cannot_recover_owned_jobs(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
@@ -97,6 +120,35 @@ class ModelQueueTests(unittest.TestCase):
                 candidate = {**model, key: invalid}
                 with self.assertRaisesRegex(StudioError, "invalid model identity provenance"):
                     ModelQueue._validate_model(candidate, 1)
+
+    def test_close_terminates_running_adapter_and_persists_interruption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Shutdown adapter")
+            video = data / "clip.mp4"
+            video.write_bytes(b"video")
+            import_video(data, project["id"], video, "clip.mp4", width=10, height=10, duration=1, fps=1)
+            marker = data / "adapter-started"
+            script = (
+                "import pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text('started'); "
+                "time.sleep(60)"
+            )
+            queue = ModelQueue(data)
+            submitted = queue.submit(project["id"], [sys.executable, "-c", script, str(marker)])
+            deadline = time.monotonic() + 5
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(marker.exists())
+            started = time.monotonic()
+            queue.close()
+            self.assertLess(time.monotonic() - started, 4)
+            job = queue.get(project["id"], submitted["id"])
+            self.assertEqual(job["status"], "failed")
+            self.assertIn("closed", job["error"])
+            with self.assertRaisesRegex(StudioError, "queue is closed"):
+                queue.submit(project["id"], [sys.executable, "-c", "pass"])
+            replacement = ModelQueue(data)
+            replacement.close()
 
     def test_external_adapter_writes_separate_proposals(self):
         with tempfile.TemporaryDirectory() as temporary:

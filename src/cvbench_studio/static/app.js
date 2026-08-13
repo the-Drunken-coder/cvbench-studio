@@ -239,10 +239,11 @@ $("#overlay").addEventListener("pointerdown", event => {
     const originalLabelOrigin = track?.label_origin ? structuredClone(track.label_origin) : null;
     const wasDirty = state.dirty;
     markSelectedTrackModelAssisted();
+    const replacedIndex = existing ? state.annotations.boxes.indexOf(existing) : -1;
     if (existing) state.annotations.boxes = state.annotations.boxes.filter(box => box !== existing);
     const box = {frame: currentFrame(), track_id: state.selectedTrack, bbox_xyxy: [point[0], point[1], point[0], point[1]]};
     state.annotations.boxes.push(box);
-    state.interaction = {kind: "draw", point, box, replaced: existing, originalLabelOrigin, wasDirty};
+    state.interaction = {kind: "draw", point, box, replaced: existing, replacedIndex, originalLabelOrigin, wasDirty};
     markDirty();
   }
   $("#overlay").setPointerCapture(event.pointerId);
@@ -306,7 +307,7 @@ function cancelInteraction() {
   const action = state.interaction;
   if (action.kind === "draw") {
     state.annotations.boxes = state.annotations.boxes.filter(item => item !== action.box);
-    if (action.replaced) state.annotations.boxes.push(action.replaced);
+    if (action.replaced) state.annotations.boxes.splice(action.replacedIndex, 0, action.replaced);
     const track = state.annotations.tracks.find(item => item.id === action.box.track_id);
     if (track) {
       if (action.originalLabelOrigin) track.label_origin = action.originalLabelOrigin;
