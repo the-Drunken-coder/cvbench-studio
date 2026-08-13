@@ -33,6 +33,34 @@ class ModelQueueTests(unittest.TestCase):
             time.sleep(0.02)
         return queue.get(project_id, job_id)
 
+    def test_startup_fails_interrupted_jobs_and_removes_snapshots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Interrupted adapter")
+            jobs = data / "projects" / project["id"] / "jobs"
+            jobs.mkdir()
+            job_id = "a" * 32
+            snapshot = jobs / f"{job_id}.input.mp4"
+            snapshot.write_bytes(b"video snapshot")
+            job = {
+                "schema_version": "cvbench.model-job/v1",
+                "id": job_id,
+                "project_id": project["id"],
+                "input_filename": snapshot.name,
+                "status": "running",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "started_at": "2026-01-01T00:00:01+00:00",
+                "finished_at": None,
+                "error": None,
+            }
+            (jobs / f"{job_id}.json").write_text(json.dumps(job))
+            queue = ModelQueue(data)
+            recovered = queue.get(project["id"], job_id)
+            self.assertEqual(recovered["status"], "failed")
+            self.assertIn("restarted", recovered["error"])
+            self.assertIsNotNone(recovered["finished_at"])
+            self.assertFalse(snapshot.exists())
+
     def test_external_adapter_writes_separate_proposals(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)

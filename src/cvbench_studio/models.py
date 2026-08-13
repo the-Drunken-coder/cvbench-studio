@@ -35,8 +35,37 @@ class ModelQueue:
         self.data_dir = data_dir
         self._queue: Queue[tuple[str, str, list[str]]] = Queue()
         self._lock = threading.Lock()
+        self._fail_interrupted_jobs()
         self._worker = threading.Thread(target=self._run, daemon=True, name="cvbench-model-queue")
         self._worker.start()
+
+    def _fail_interrupted_jobs(self) -> None:
+        projects_root = self.data_dir / "projects"
+        if not projects_root.is_dir():
+            return
+        for project_root in projects_root.iterdir():
+            jobs_root = project_root / "jobs"
+            if not jobs_root.is_dir():
+                continue
+            for job_path in jobs_root.glob("*.json"):
+                try:
+                    job = json.loads(job_path.read_text())
+                    job_id = job["id"]
+                    project_id = job["project_id"]
+                    if (
+                        job["status"] not in {"queued", "running"}
+                        or job_path.stem != job_id
+                        or project_root.name != project_id
+                    ):
+                        continue
+                    input_path = self.input_path(project_id, job_id)
+                except (KeyError, OSError, ValueError, json.JSONDecodeError):
+                    continue
+                job["status"] = "failed"
+                job["finished_at"] = _now()
+                job["error"] = "Studio restarted before the adapter completed"
+                self._write(project_id, job)
+                input_path.unlink(missing_ok=True)
 
     def submit(self, project_id: str, command: str | list[str]) -> dict[str, Any]:
         argv = shlex.split(command) if isinstance(command, str) else list(command)
