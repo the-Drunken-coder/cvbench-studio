@@ -164,6 +164,50 @@ class ModelQueueTests(unittest.TestCase):
             with self.assertRaisesRegex(StudioError, "different source video"):
                 queue.proposals(project["id"], job["id"])
 
+    def test_queued_job_runs_against_submitted_video_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Queued source")
+            first = data / "first.mp4"
+            first.write_bytes(b"first")
+            import_video(data, project["id"], first, "first.mp4", width=10, height=10, duration=1, fps=1)
+            model = {
+                "name": "fixture",
+                "version": "1",
+                "weights_uri": "synthetic://weights",
+                "weights_sha256": "0" * 64,
+                "code_revision": "1234567",
+                "config_sha256": "1" * 64,
+                "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
+            }
+            metadata = json.dumps(
+                {"schema_version": "cvbench.model-output/v1", "model": model},
+                separators=(",", ":"),
+            )
+            queue = ModelQueue(data)
+            blocker_script = (
+                "import pathlib,sys,time; time.sleep(.2); "
+                "pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + '\\n')"
+            )
+            blocker = queue.submit(
+                project["id"], [sys.executable, "-c", blocker_script, "{output}", metadata]
+            )
+            snapshot_script = (
+                "import pathlib,sys; video=pathlib.Path(sys.argv[2]).read_bytes(); "
+                "assert video == b'first'; pathlib.Path(sys.argv[1]).write_text(sys.argv[3] + '\\n')"
+            )
+            submitted = queue.submit(
+                project["id"],
+                [sys.executable, "-c", snapshot_script, "{output}", "{video}", metadata],
+            )
+            second = data / "second.mp4"
+            second.write_bytes(b"second")
+            import_video(data, project["id"], second, "second.mp4", width=10, height=10, duration=1, fps=1)
+            self.assertEqual(self._wait(queue, project["id"], blocker["id"])["status"], "completed")
+            job = self._wait(queue, project["id"], submitted["id"])
+            self.assertEqual(job["status"], "completed", job)
+            self.assertEqual(queue.input_path(project["id"], submitted["id"]).read_bytes(), b"first")
+
     def test_tail_proposal_extends_underreported_project_frame_count(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)

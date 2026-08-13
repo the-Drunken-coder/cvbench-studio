@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import tempfile
@@ -201,6 +202,25 @@ def extend_video_frame_count(
             project["updated_at"] = _now()
             _write_json(project_dir(data_dir, project_id) / "project.json", project)
         return project
+
+
+def snapshot_video(data_dir: Path, project_id: str, destination: Path) -> dict[str, Any]:
+    """Bind a model job to the exact imported video inode and hash."""
+    with PROJECT_WRITE_LOCK:
+        project = load_project(data_dir, project_id)
+        video = project.get("video")
+        if not video:
+            raise StudioError("project has no video")
+        source = video_path(data_dir, project_id)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(source, destination)
+        except OSError:
+            shutil.copyfile(source, destination)
+        if _sha256_file(destination) != video["sha256"]:
+            destination.unlink(missing_ok=True)
+            raise StudioError("project video changed while queuing model job")
+        return video
 
 
 def video_path(data_dir: Path, project_id: str) -> Path:

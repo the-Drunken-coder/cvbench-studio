@@ -14,7 +14,7 @@ from pathlib import Path
 from queue import Queue
 from typing import Any
 
-from .core import StudioError, extend_video_frame_count, load_project, project_dir, video_path
+from .core import StudioError, extend_video_frame_count, load_project, project_dir, snapshot_video
 
 TRACK_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -42,11 +42,9 @@ class ModelQueue:
         argv = shlex.split(command) if isinstance(command, str) else list(command)
         if not argv or not all(isinstance(part, str) and part for part in argv):
             raise StudioError("model command must contain an executable")
-        project = load_project(self.data_dir, project_id)
-        video = project.get("video")
-        if not video:
-            raise StudioError("project has no video")
         job_id = uuid.uuid4().hex
+        input_path = self.input_path(project_id, job_id)
+        video = snapshot_video(self.data_dir, project_id, input_path)
         job = {
             "schema_version": "cvbench.model-job/v1",
             "id": job_id,
@@ -60,7 +58,11 @@ class ModelQueue:
             "returncode": None,
             "error": None,
         }
-        self._write(project_id, job)
+        try:
+            self._write(project_id, job)
+        except BaseException:
+            input_path.unlink(missing_ok=True)
+            raise
         self._queue.put((project_id, job_id, argv))
         return job
 
@@ -82,6 +84,10 @@ class ModelQueue:
 
     def output_path(self, project_id: str, job_id: str) -> Path:
         return project_dir(self.data_dir, project_id) / "jobs" / f"{job_id}.jsonl"
+
+    def input_path(self, project_id: str, job_id: str) -> Path:
+        self._job_path(project_id, job_id)
+        return project_dir(self.data_dir, project_id) / "jobs" / f"{job_id}.input.mp4"
 
     def proposals(self, project_id: str, job_id: str) -> dict[str, Any]:
         job = self.get(project_id, job_id)
@@ -218,19 +224,28 @@ class ModelQueue:
         job["started_at"] = _now()
         self._write(project_id, job)
         output = self.output_path(project_id, job_id)
-        replacements = {
-            "{video}": str(video_path(self.data_dir, project_id)),
-            "{output}": str(output),
-            "{project}": str(project_dir(self.data_dir, project_id)),
-        }
-        expanded = [replacements.get(part, part) for part in argv]
-        environment = os.environ.copy()
-        environment.update(
-            CVBENCH_STUDIO_PROJECT=project_id,
-            CVBENCH_STUDIO_VIDEO=replacements["{video}"],
-            CVBENCH_STUDIO_OUTPUT=replacements["{output}"],
-        )
+        input_path = self.input_path(project_id, job_id)
         try:
+            if not input_path.is_file():
+                raise StudioError("queued model input is missing")
+            input_digest = hashlib.sha256()
+            with input_path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    input_digest.update(chunk)
+            if input_digest.hexdigest() != job["video_sha256"]:
+                raise StudioError("queued model input no longer matches its source video")
+            replacements = {
+                "{video}": str(input_path),
+                "{output}": str(output),
+                "{project}": str(project_dir(self.data_dir, project_id)),
+            }
+            expanded = [replacements.get(part, part) for part in argv]
+            environment = os.environ.copy()
+            environment.update(
+                CVBENCH_STUDIO_PROJECT=project_id,
+                CVBENCH_STUDIO_VIDEO=replacements["{video}"],
+                CVBENCH_STUDIO_OUTPUT=replacements["{output}"],
+            )
             completed = subprocess.run(
                 expanded,
                 cwd=project_dir(self.data_dir, project_id),
