@@ -33,6 +33,24 @@ class ModelQueue:
 
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._ownership = (self.data_dir / ".model-queue.lock").open("a+b")
+        try:
+            if os.name == "posix":
+                import fcntl
+
+                fcntl.flock(self._ownership, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                import msvcrt
+
+                self._ownership.seek(0)
+                self._ownership.write(b"\0")
+                self._ownership.flush()
+                self._ownership.seek(0)
+                msvcrt.locking(self._ownership.fileno(), msvcrt.LK_NBLCK, 1)
+        except (OSError, BlockingIOError) as exc:
+            self._ownership.close()
+            raise StudioError("another model queue is already using this data directory") from exc
         self._queue: Queue[tuple[str, str, list[str]]] = Queue()
         self._lock = threading.Lock()
         self._fail_interrupted_jobs()
@@ -50,6 +68,8 @@ class ModelQueue:
             for job_path in jobs_root.glob("*.json"):
                 try:
                     job = json.loads(job_path.read_text())
+                    if not isinstance(job, dict):
+                        continue
                     job_id = job["id"]
                     project_id = job["project_id"]
                     if (
@@ -66,6 +86,12 @@ class ModelQueue:
                 job["error"] = "Studio restarted before the adapter completed"
                 self._write(project_id, job)
                 input_path.unlink(missing_ok=True)
+
+    def close(self) -> None:
+        """Release exclusive queue ownership after submitted work is complete."""
+        self._queue.join()
+        if not self._ownership.closed:
+            self._ownership.close()
 
     def submit(self, project_id: str, command: str | list[str]) -> dict[str, Any]:
         argv = shlex.split(command) if isinstance(command, str) else list(command)
@@ -370,6 +396,11 @@ class ModelQueue:
         }
         if not isinstance(model, dict) or not required.issubset(model):
             raise StudioError(f"adapter output line {line_number} lacks complete model provenance")
+        if any(
+            not isinstance(model[key], str) or not model[key].strip()
+            for key in ("name", "version", "weights_uri")
+        ):
+            raise StudioError(f"adapter output line {line_number} has invalid model identity provenance")
         if not SHA256.fullmatch(str(model["weights_sha256"])) or not SHA256.fullmatch(str(model["config_sha256"])):
             raise StudioError(f"adapter output line {line_number} has an invalid provenance hash")
         if len(str(model["code_revision"])) < 7:

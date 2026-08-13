@@ -61,8 +61,11 @@ def main(argv: list[str] | None = None) -> int:
         if not args.adapter:
             raise SystemExit("run-model requires an external adapter command after --")
         queue = ModelQueue(data_dir)
-        job = queue.submit(args.project_id, args.adapter)
-        job = queue.wait(args.project_id, job["id"])
+        try:
+            job = queue.submit(args.project_id, args.adapter)
+            job = queue.wait(args.project_id, job["id"])
+        finally:
+            queue.close()
         print(json.dumps(job, indent=2, sort_keys=True))
         return 0 if job["status"] == "completed" else 1
     raise AssertionError(args.command)

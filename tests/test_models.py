@@ -60,6 +60,43 @@ class ModelQueueTests(unittest.TestCase):
             self.assertIn("restarted", recovered["error"])
             self.assertIsNotNone(recovered["finished_at"])
             self.assertFalse(snapshot.exists())
+            queue.close()
+
+    def test_second_live_queue_cannot_recover_owned_jobs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            queue = ModelQueue(data)
+            try:
+                with self.assertRaisesRegex(StudioError, "another model queue"):
+                    ModelQueue(data)
+            finally:
+                queue.close()
+
+    def test_startup_skips_non_object_job_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Malformed job")
+            jobs = data / "projects" / project["id"] / "jobs"
+            jobs.mkdir()
+            (jobs / f"{'b' * 32}.json").write_text("[]\n")
+            queue = ModelQueue(data)
+            queue.close()
+
+    def test_model_identity_provenance_requires_non_empty_strings(self):
+        model = {
+            "name": "fixture",
+            "version": "1",
+            "weights_uri": "synthetic://weights",
+            "weights_sha256": "0" * 64,
+            "code_revision": "1234567",
+            "config_sha256": "1" * 64,
+            "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
+        }
+        for key, invalid in (("name", ""), ("version", "   "), ("weights_uri", None)):
+            with self.subTest(key=key, invalid=invalid):
+                candidate = {**model, key: invalid}
+                with self.assertRaisesRegex(StudioError, "invalid model identity provenance"):
+                    ModelQueue._validate_model(candidate, 1)
 
     def test_external_adapter_writes_separate_proposals(self):
         with tempfile.TemporaryDirectory() as temporary:
