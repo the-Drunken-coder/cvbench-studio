@@ -545,6 +545,19 @@ class ModelQueue:
         temporary.write_text(json.dumps(job, indent=2, sort_keys=True) + "\n")
         temporary.replace(path)
 
+    def _snapshot_sha256(self, input_path: Path) -> str:
+        digest = hashlib.sha256()
+        with input_path.open("rb") as stream:
+            while True:
+                if self._closing.is_set():
+                    raise StudioError("Studio closed before the adapter completed")
+                chunk = stream.read(1024 * 1024)
+                if self._closing.is_set():
+                    raise StudioError("Studio closed before the adapter completed")
+                if not chunk:
+                    return digest.hexdigest()
+                digest.update(chunk)
+
     def _run(self) -> None:
         while True:
             queued = self._queue.get()
@@ -568,11 +581,7 @@ class ModelQueue:
                 raise StudioError("Studio closed before the adapter completed")
             if not input_path.is_file():
                 raise StudioError("queued model input is missing")
-            input_digest = hashlib.sha256()
-            with input_path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    input_digest.update(chunk)
-            if input_digest.hexdigest() != job["video_sha256"]:
+            if self._snapshot_sha256(input_path) != job["video_sha256"]:
                 raise StudioError("queued model input no longer matches its source video")
             replacements = {
                 "{video}": str(input_path),
@@ -617,11 +626,7 @@ class ModelQueue:
                         pass
             if self._closing.is_set():
                 raise StudioError("Studio closed before the adapter completed")
-            post_run_digest = hashlib.sha256()
-            with input_path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    post_run_digest.update(chunk)
-            if post_run_digest.hexdigest() != job["video_sha256"]:
+            if self._snapshot_sha256(input_path) != job["video_sha256"]:
                 raise StudioError("queued model input changed during adapter execution")
             job["returncode"] = process.returncode
             job["stdout"] = stdout[-20_000:]

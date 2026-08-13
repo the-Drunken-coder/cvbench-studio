@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 import zipfile
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -267,6 +268,22 @@ class ModelQueueTests(unittest.TestCase):
                 self.assertIn("before the adapter started", job["error"])
                 self.assertFalse(queue.input_path(project["id"], original["id"]).exists())
             self.assertIsNone(queue._queue.get_nowait())
+
+    def test_snapshot_hashing_stops_when_queue_closes(self):
+        queue = object.__new__(ModelQueue)
+        queue._closing = threading.Event()
+
+        class ClosingStream(BytesIO):
+            def read(self, size=-1):
+                chunk = super().read(size)
+                queue._closing.set()
+                return chunk
+
+        with (
+            patch.object(Path, "open", return_value=ClosingStream(b"video snapshot")),
+            self.assertRaisesRegex(StudioError, "closed before the adapter completed"),
+        ):
+            queue._snapshot_sha256(Path("snapshot.mp4"))
 
     def test_proposals_reject_output_changed_after_adapter_execution(self):
         with tempfile.TemporaryDirectory() as temporary:
