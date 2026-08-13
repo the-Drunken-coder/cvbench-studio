@@ -287,17 +287,10 @@ function finishInteraction() {
   const action = state.interaction;
   const box = action.box;
   box.bbox_xyxy = box.bbox_xyxy.map(value => Math.round(value * 1000) / 1000);
-  if (
-    action.kind !== "draw"
-    && box.bbox_xyxy.some((value, index) => value !== action.original[index])
-  ) {
-    markBoxModelAssisted(box);
-    markDirty();
-  }
   const [x1, y1, x2, y2] = box.bbox_xyxy;
   if (x2 - x1 < 3 || y2 - y1 < 3) {
-    state.annotations.boxes = state.annotations.boxes.filter(item => item !== box);
     if (action.kind === "draw") {
+      state.annotations.boxes = state.annotations.boxes.filter(item => item !== box);
       if (action.replaced) state.annotations.boxes.splice(action.replacedIndex, 0, action.replaced);
       const track = state.annotations.tracks.find(item => item.id === action.box.track_id);
       if (track) {
@@ -306,8 +299,16 @@ function finishInteraction() {
       }
       markDirty(action.wasDirty);
     } else {
-      markDirty();
+      box.bbox_xyxy = [...action.original];
+      state.selectedTrack = action.previousSelectedTrack;
+      markDirty(action.wasDirty);
     }
+  } else if (
+    action.kind !== "draw"
+    && box.bbox_xyxy.some((value, index) => value !== action.original[index])
+  ) {
+    markBoxModelAssisted(box);
+    markDirty();
   }
   state.interaction = null;
   renderTracks();
