@@ -452,9 +452,11 @@ class ModelQueue:
             job["error"] = str(exc)
         job["finished_at"] = _now()
         try:
-            self._write(project_id, job)
-        finally:
             input_path.unlink(missing_ok=True)
+        except OSError as exc:
+            job["status"] = "failed"
+            job["error"] = f"could not remove model input snapshot: {exc}"
+        self._write(project_id, job)
 
     @staticmethod
     def _validate_model(model: Any, line_number: int) -> None:
