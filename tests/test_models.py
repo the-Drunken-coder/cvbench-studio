@@ -7,6 +7,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from cvbench_studio.core import (
     StudioError,
@@ -164,6 +165,58 @@ class ModelQueueTests(unittest.TestCase):
                 data, project["id"], replacement, "second.mp4", width=10, height=10, duration=2, fps=1
             )
             with self.assertRaisesRegex(StudioError, "different source video"):
+                queue.proposals(project["id"], job["id"])
+
+    def test_unchanged_frame_count_rechecks_source_video(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Same-length replacement")
+            first = data / "first.mp4"
+            first.write_bytes(b"first")
+            import_video(data, project["id"], first, "first.mp4", width=10, height=10, duration=1, fps=1)
+            model = {
+                "name": "fixture",
+                "version": "1",
+                "weights_uri": "synthetic://weights",
+                "weights_sha256": "0" * 64,
+                "code_revision": "1234567",
+                "config_sha256": "1" * 64,
+                "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
+            }
+            payload = json.dumps({"schema_version": "cvbench.model-output/v1", "model": model})
+            script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + '\\n')"
+            queue = ModelQueue(data)
+            submitted = queue.submit(
+                project["id"], [sys.executable, "-c", script, "{output}", payload]
+            )
+            job = self._wait(queue, project["id"], submitted["id"])
+            second = data / "second.mp4"
+            second.write_bytes(b"second")
+
+            load_original = load_project
+            load_calls = 0
+
+            def replace_after_initial_check(data_dir, project_id):
+                nonlocal load_calls
+                loaded = load_original(data_dir, project_id)
+                load_calls += 1
+                if load_calls == 1:
+                    import_video(
+                        data,
+                        project["id"],
+                        second,
+                        "second.mp4",
+                        width=10,
+                        height=10,
+                        duration=1,
+                        fps=1,
+                    )
+                return loaded
+
+            with (
+                patch("cvbench_studio.models.load_project", side_effect=replace_after_initial_check),
+                self.assertRaisesRegex(StudioError, "different source video"),
+            ):
                 queue.proposals(project["id"], job["id"])
 
     def test_queued_job_runs_against_submitted_video_snapshot(self):
