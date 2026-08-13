@@ -200,6 +200,15 @@ def main() -> int:
                         output.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
                     selected_frame = next(selected_indices)
                 frame_index += 1
+            if frame_index:
+                completed_metadata = {
+                    "schema_version": "cvbench.model-output/v1",
+                    "model": model,
+                    "decoded_frame_count": frame_index,
+                }
+                output.write(
+                    json.dumps(completed_metadata, sort_keys=True, separators=(",", ":")) + "\n"
+                )
     finally:
         capture.release()
     if frame_index == 0:

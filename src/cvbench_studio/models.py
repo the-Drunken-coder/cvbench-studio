@@ -88,6 +88,8 @@ class ModelQueue:
         video = project.get("video")
         if not video:
             raise StudioError("project has no video")
+        decoded_frame_count = job.get("decoded_frame_count")
+        frame_count = max(video["frame_count"], decoded_frame_count or 0)
         rows = []
         for line_number, line in enumerate(self.output_path(project_id, job_id).read_text().splitlines(), 1):
             if not line:
@@ -100,7 +102,12 @@ class ModelQueue:
             class_id = row.get("class_id")
             box = row.get("bbox_xyxy")
             confidence = row.get("confidence")
-            if isinstance(frame, bool) or not isinstance(frame, int) or frame < 0:
+            if (
+                isinstance(frame, bool)
+                or not isinstance(frame, int)
+                or frame < 0
+                or frame >= frame_count
+            ):
                 raise StudioError(f"proposal line {line_number} has an invalid frame")
             if not isinstance(track_id, str) or not TRACK_ID.fullmatch(track_id):
                 raise StudioError(f"proposal line {line_number} has an invalid track_id")
@@ -124,7 +131,6 @@ class ModelQueue:
             ):
                 raise StudioError(f"proposal line {line_number} has an invalid confidence")
             rows.append(row)
-        frame_count = max([video["frame_count"], *(row["frame"] + 1 for row in rows)])
         track_map: dict[str, dict[str, Any]] = {}
         boxes = []
         seen = set()
@@ -233,6 +239,7 @@ class ModelQueue:
                 job["error"] = "adapter did not create {output}"
             else:
                 model = None
+                decoded_frame_count = None
                 for line_number, line in enumerate(output.read_text().splitlines(), 1):
                     if line:
                         try:
@@ -248,12 +255,30 @@ class ModelQueue:
                             if model is not None and candidate_model != model:
                                 raise StudioError("proposal rows contain inconsistent model provenance")
                             model = candidate_model
+                        if (
+                            row.get("schema_version") == "cvbench.model-output/v1"
+                            and "decoded_frame_count" in row
+                        ):
+                            candidate_count = row["decoded_frame_count"]
+                            if (
+                                isinstance(candidate_count, bool)
+                                or not isinstance(candidate_count, int)
+                                or candidate_count <= 0
+                            ):
+                                raise StudioError(
+                                    f"adapter output line {line_number} has an invalid decoded frame count"
+                                )
+                            if decoded_frame_count is not None and candidate_count != decoded_frame_count:
+                                raise StudioError("adapter output has inconsistent decoded frame counts")
+                            decoded_frame_count = candidate_count
                 digest = hashlib.sha256()
                 with output.open("rb") as stream:
                     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                         digest.update(chunk)
                 job["raw_output_sha256"] = digest.hexdigest()
                 job["model"] = model
+                if decoded_frame_count is not None:
+                    job["decoded_frame_count"] = decoded_frame_count
                 job["status"] = "completed"
         except Exception as exc:  # noqa: BLE001 - adapter failures become durable job state
             job["status"] = "failed"

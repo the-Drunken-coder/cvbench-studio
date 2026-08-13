@@ -154,14 +154,27 @@ class ModelQueueTests(unittest.TestCase):
                     "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
                 },
             }
+            metadata = {
+                "schema_version": "cvbench.model-output/v1",
+                "model": proposal["model"],
+                "decoded_frame_count": 2,
+            }
+            payload = "\n".join(
+                [
+                    json.dumps({"schema_version": "cvbench.model-output/v1", "model": proposal["model"]}),
+                    json.dumps(proposal, separators=(",", ":")),
+                    json.dumps(metadata, separators=(",", ":")),
+                ]
+            )
             script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + '\\n')"
             queue = ModelQueue(data)
             submitted = queue.submit(
                 project["id"],
-                [sys.executable, "-c", script, "{output}", json.dumps(proposal, separators=(",", ":"))],
+                [sys.executable, "-c", script, "{output}", payload],
             )
             job = self._wait(queue, project["id"], submitted["id"])
             self.assertEqual(job["status"], "completed", job)
+            self.assertEqual(job["decoded_frame_count"], 2)
             imported = queue.proposals(project["id"], job["id"])
             self.assertEqual(imported["frame_count"], 2)
             self.assertEqual(imported["boxes"][0]["frame"], 1)
@@ -191,7 +204,17 @@ class ModelQueueTests(unittest.TestCase):
                 "bbox_xyxy": [1, 1, 5, 8],
                 "model": model,
             }
-            payload = "\n".join(json.dumps(proposal, separators=(",", ":")) for _ in range(2))
+            metadata = {
+                "schema_version": "cvbench.model-output/v1",
+                "model": model,
+                "decoded_frame_count": 2,
+            }
+            payload = "\n".join(
+                [
+                    *(json.dumps(proposal, separators=(",", ":")) for _ in range(2)),
+                    json.dumps(metadata, separators=(",", ":")),
+                ]
+            )
             script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + '\\n')"
             queue = ModelQueue(data)
             submitted = queue.submit(project["id"], [sys.executable, "-c", script, "{output}", payload])

@@ -37,6 +37,12 @@ Each non-empty output line must be valid JSON. The recommended proposal shape is
 ```
 
 Every proposal row from one job must carry identical, complete model provenance.
+An adapter should also emit a `cvbench.model-output/v1` metadata row with that
+same `model` object before proposals. If it discovers the exact media length at
+EOF, it should emit a final metadata row containing the same model plus a
+positive integer `decoded_frame_count`. Studio uses that value to correct
+underreported browser media metadata, including when decoded tail frames contain
+no detections.
 The queue validates JSON syntax, frame/class/geometry bounds, and provenance,
 then records the exact command, timestamps, raw output hash, return code,
 stdout, and stderr. A completed job can be explicitly imported into the

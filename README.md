@@ -78,7 +78,10 @@ or review approval.
 
 Adapters should emit one `cvbench.model-output/v1` metadata row containing the
 model provenance before any `cvbench.model-proposal/v1` rows. This preserves
-the model audit trail even when a successful run finds no objects.
+the model audit trail even when a successful run finds no objects. Adapters
+that discover the exact media length while decoding should emit a final metadata
+row with the same model and a positive integer `decoded_frame_count`; Studio
+uses that decoder-observed value instead of inferring media length from detections.
 
 On Apple Silicon, run Studio and a PyTorch adapter natively so the adapter can
 select `mps`. Studio does not import PyTorch, select a model, download weights,
