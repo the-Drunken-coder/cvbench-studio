@@ -261,8 +261,8 @@ class ModelQueueTests(unittest.TestCase):
             self.assertEqual(self._wait(queue, project["id"], blocker["id"])["status"], "completed")
             job = self._wait(queue, project["id"], submitted["id"])
             self.assertEqual(job["status"], "completed", job)
-            self.assertEqual(queue.input_path(project["id"], submitted["id"]).suffix, ".webm")
-            self.assertEqual(queue.input_path(project["id"], submitted["id"]).read_bytes(), b"first")
+            self.assertEqual(job["input_filename"].split(".")[-1], "webm")
+            self.assertFalse(queue.input_path(project["id"], submitted["id"]).exists())
 
     def test_job_fails_if_adapter_mutates_its_input_snapshot(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -282,6 +282,7 @@ class ModelQueueTests(unittest.TestCase):
             job = self._wait(queue, project["id"], submitted["id"])
             self.assertEqual(job["status"], "failed")
             self.assertIn("changed during adapter execution", job["error"])
+            self.assertFalse(queue.input_path(project["id"], submitted["id"]).exists())
             self.assertEqual(video_path(data, project["id"]).read_bytes(), b"original")
 
     def test_tail_proposal_extends_underreported_project_frame_count(self):

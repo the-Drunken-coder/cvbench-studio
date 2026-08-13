@@ -328,7 +328,10 @@ class ModelQueue:
             job["status"] = "failed"
             job["error"] = str(exc)
         job["finished_at"] = _now()
-        self._write(project_id, job)
+        try:
+            self._write(project_id, job)
+        finally:
+            input_path.unlink(missing_ok=True)
 
     @staticmethod
     def _validate_model(model: Any, line_number: int) -> None:
