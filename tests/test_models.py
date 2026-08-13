@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import stat
 import sys
 import tempfile
 import time
@@ -17,6 +19,7 @@ from cvbench_studio.core import (
     load_project,
     save_annotations,
     save_source_metadata,
+    snapshot_video,
     video_path,
 )
 from cvbench_studio.models import ModelQueue
@@ -137,6 +140,18 @@ class ModelQueueTests(unittest.TestCase):
                 with self.assertRaisesRegex(StudioError, "invalid provenance hash"):
                     ModelQueue._validate_model(candidate, 1)
 
+    def test_windows_model_snapshot_remains_writable_for_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Windows snapshot")
+            video = data / "clip.mp4"
+            video.write_bytes(b"video")
+            import_video(data, project["id"], video, "clip.mp4", width=10, height=10, duration=1, fps=1)
+            with patch("cvbench_studio.core.os.name", "nt"):
+                _, snapshot = snapshot_video(data, project["id"], data / "jobs" / "snapshot")
+            self.assertTrue(snapshot.stat().st_mode & stat.S_IWUSR)
+            snapshot.unlink()
+
     def test_close_terminates_running_adapter_and_persists_interruption(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
@@ -194,6 +209,62 @@ class ModelQueueTests(unittest.TestCase):
             job = self._wait(queue, project["id"], submitted["id"])
             self.assertEqual(job["status"], "completed", job)
             queue.output_path(project["id"], job["id"]).write_text(payload + "\n\n")
+            with self.assertRaisesRegex(StudioError, "changed after adapter execution"):
+                queue.proposals(project["id"], job["id"])
+
+    def test_completion_metadata_and_digest_use_the_same_output_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Bound output")
+            video = data / "clip.mp4"
+            video.write_bytes(b"video")
+            import_video(data, project["id"], video, "clip.mp4", width=10, height=10, duration=1, fps=1)
+            original_model = {
+                "name": "original",
+                "version": "1",
+                "weights_uri": "synthetic://original",
+                "weights_sha256": "0" * 64,
+                "code_revision": "1234567",
+                "config_sha256": "1" * 64,
+                "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
+            }
+            replacement_model = {**original_model, "name": "replacement"}
+            original_body = (
+                json.dumps(
+                    {"schema_version": "cvbench.model-output/v1", "model": original_model},
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode()
+            replacement_body = (
+                json.dumps(
+                    {"schema_version": "cvbench.model-output/v1", "model": replacement_model},
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode()
+            script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(bytes.fromhex(sys.argv[2]))"
+            queue = ModelQueue(data)
+            real_read_bytes = Path.read_bytes
+            replaced = False
+
+            def read_then_replace(path: Path) -> bytes:
+                nonlocal replaced
+                body = real_read_bytes(path)
+                if path.suffix == ".jsonl" and not replaced:
+                    path.write_bytes(replacement_body)
+                    replaced = True
+                return body
+
+            with patch.object(Path, "read_bytes", read_then_replace):
+                submitted = queue.submit(
+                    project["id"],
+                    [sys.executable, "-c", script, "{output}", original_body.hex()],
+                )
+                job = self._wait(queue, project["id"], submitted["id"])
+            self.assertEqual(job["status"], "completed", job)
+            self.assertEqual(job["model"], original_model)
+            self.assertEqual(job["raw_output_sha256"], hashlib.sha256(original_body).hexdigest())
             with self.assertRaisesRegex(StudioError, "changed after adapter execution"):
                 queue.proposals(project["id"], job["id"])
 

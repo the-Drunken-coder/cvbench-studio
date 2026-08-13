@@ -252,7 +252,8 @@ def snapshot_video(
             shutil.copyfile(source, destination)
             if _sha256_file(destination) != video["sha256"]:
                 raise StudioError("project video changed while queuing model job")
-            destination.chmod(0o444)
+            if os.name != "nt":
+                destination.chmod(0o444)
         except Exception:
             destination.unlink(missing_ok=True)
             raise

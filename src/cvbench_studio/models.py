@@ -405,9 +405,14 @@ class ModelQueue:
                 job["status"] = "failed"
                 job["error"] = "adapter did not create {output}"
             else:
+                output_body = output.read_bytes()
+                try:
+                    output_text = output_body.decode()
+                except UnicodeDecodeError as exc:
+                    raise StudioError("adapter output is not valid UTF-8") from exc
                 model = None
                 decoded_frame_count = None
-                for line_number, line in enumerate(output.read_text().splitlines(), 1):
+                for line_number, line in enumerate(output_text.splitlines(), 1):
                     if line:
                         try:
                             row = json.loads(line)
@@ -438,11 +443,7 @@ class ModelQueue:
                             if decoded_frame_count is not None and candidate_count != decoded_frame_count:
                                 raise StudioError("adapter output has inconsistent decoded frame counts")
                             decoded_frame_count = candidate_count
-                digest = hashlib.sha256()
-                with output.open("rb") as stream:
-                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                        digest.update(chunk)
-                job["raw_output_sha256"] = digest.hexdigest()
+                job["raw_output_sha256"] = hashlib.sha256(output_body).hexdigest()
                 job["model"] = model
                 if decoded_frame_count is not None:
                     job["decoded_frame_count"] = decoded_frame_count
