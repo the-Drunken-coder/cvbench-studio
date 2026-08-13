@@ -130,7 +130,9 @@ class ModelQueueTests(unittest.TestCase):
             import_video(data, project["id"], video, "clip.mp4", width=10, height=10, duration=1, fps=1)
             marker = data / "adapter-started"
             script = (
-                "import pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text('started'); "
+                "import pathlib,subprocess,sys,time; "
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                "pathlib.Path(sys.argv[1]).write_text('started'); "
                 "time.sleep(60)"
             )
             queue = ModelQueue(data)
@@ -149,6 +151,35 @@ class ModelQueueTests(unittest.TestCase):
                 queue.submit(project["id"], [sys.executable, "-c", "pass"])
             replacement = ModelQueue(data)
             replacement.close()
+
+    def test_proposals_reject_output_changed_after_adapter_execution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            project = create_project(data, "Tampered output")
+            video = data / "clip.mp4"
+            video.write_bytes(b"video")
+            import_video(data, project["id"], video, "clip.mp4", width=10, height=10, duration=1, fps=1)
+            model = {
+                "name": "fixture",
+                "version": "1",
+                "weights_uri": "synthetic://weights",
+                "weights_sha256": "0" * 64,
+                "code_revision": "1234567",
+                "config_sha256": "1" * 64,
+                "license": {"spdx": "MIT", "url": "https://opensource.org/license/mit"},
+            }
+            payload = json.dumps({"schema_version": "cvbench.model-output/v1", "model": model})
+            script = "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + '\\n')"
+            queue = ModelQueue(data)
+            submitted = queue.submit(
+                project["id"],
+                [sys.executable, "-c", script, "{output}", payload],
+            )
+            job = self._wait(queue, project["id"], submitted["id"])
+            self.assertEqual(job["status"], "completed", job)
+            queue.output_path(project["id"], job["id"]).write_text(payload + "\n\n")
+            with self.assertRaisesRegex(StudioError, "changed after adapter execution"):
+                queue.proposals(project["id"], job["id"])
 
     def test_external_adapter_writes_separate_proposals(self):
         with tempfile.TemporaryDirectory() as temporary:

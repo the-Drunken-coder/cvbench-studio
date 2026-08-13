@@ -6,6 +6,7 @@ import math
 import os
 import re
 import shlex
+import signal
 import subprocess
 import threading
 import uuid
@@ -116,10 +117,13 @@ class ModelQueue:
     def _stop_active_process(self, *, kill: bool) -> None:
         with self._process_lock:
             process = self._active_process
-            if process is None or process.poll() is not None:
+            if process is None:
                 return
             try:
-                process.kill() if kill else process.terminate()
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL if kill else signal.SIGTERM)
+                elif process.poll() is None:
+                    process.kill() if kill else process.terminate()
             except OSError:
                 pass
 
@@ -201,8 +205,15 @@ class ModelQueue:
             raise StudioError("model job belongs to a different source video")
         decoded_frame_count = job.get("decoded_frame_count")
         frame_count = decoded_frame_count or video["frame_count"]
+        output_body = self.output_path(project_id, job_id).read_bytes()
+        if hashlib.sha256(output_body).hexdigest() != job.get("raw_output_sha256"):
+            raise StudioError("model proposal output changed after adapter execution")
+        try:
+            output_text = output_body.decode()
+        except UnicodeDecodeError as exc:
+            raise StudioError("model proposal output is not valid UTF-8") from exc
         rows = []
-        for line_number, line in enumerate(self.output_path(project_id, job_id).read_text().splitlines(), 1):
+        for line_number, line in enumerate(output_text.splitlines(), 1):
             if not line:
                 continue
             row = json.loads(line)
@@ -359,6 +370,7 @@ class ModelQueue:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                start_new_session=os.name == "posix",
             )
             with self._process_lock:
                 self._active_process = process
